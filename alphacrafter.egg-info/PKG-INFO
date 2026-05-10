@@ -1,0 +1,195 @@
+Metadata-Version: 2.4
+Name: alphacrafter
+Version: 0.1.0
+Summary: Multi-agent quantitative trading framework (AlphaCrafter reproduction)
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: python-dotenv>=1.0.0
+Requires-Dist: requests>=2.28.0
+Requires-Dist: charset-normalizer>=3.2.0
+Requires-Dist: beautifulsoup4>=4.12.0
+Requires-Dist: pandas>=2.0.0
+Requires-Dist: numpy>=1.24.0
+Requires-Dist: lxml>=4.9.0
+Requires-Dist: anthropic>=0.40.0
+
+# AlphaCrafter
+
+基于多智能体（Miner / Screener / Trader）与共享内存（SQLite）的量化研究与交易框架复现。三个智能体通过共享数据库 `H` 读写因子、市场状态、策略与执行结果；数据侧使用 Pandas / NumPy，行情与标的来自 S&P 500 相关抓取与历史序列。
+
+---
+
+## 一、架构总览
+
+### 1.1 符号与组件映射
+
+| 符号 | 含义 | 实现要点 |
+|------|------|----------|
+| **Z** | 因子库 | 已通过检验的因子公式集合（及元数据） |
+| **U** | 资产宇宙 | S&P 500 成分股（及扩展字段） |
+| **H** | 共享内存 | 中央 SQLite：因子代码、IC/IR、市场体制日志、策略与回测/执行结果 |
+| **M** | 市场状态 | 波动、趋势等可由行情聚合的指标，供 Screener 体制判断 |
+| **E** | 因子组合 | 经筛选、赋权、方向的因子子集 |
+| **R̂** | 市场体制 | LLM 对当前波动/趋势等的评估标签 |
+| **π** | 策略 | 由 Trader 构造并经回测择优的策略描述与参数 |
+
+### 1.2 数据流（逻辑）
+
+```text
+[数据源: S&P 500 列表 + 历史行情]
+        │
+        ▼
+   [Data Pipeline] ──写入──► [SQLite: H]
+        ▲                        │
+        │                        ├── Miner: 生成/校验因子 → 更新 Z 与 H
+        │                        ├── Screener: M,H,Z → R̂,E → 写 H
+        │                        └── Trader: E,R̂,H → π,回测,（模拟）实盘 → 写 H
+        │
+[Orchestration 主循环按阶段调度上述智能体]
+```
+
+### 1.3 智能体职责（与伪代码对应）
+
+- **Miner（算法 1）**：在 `U` 与当前 `H_t` 条件下由 LLM 生成 Pandas 因子 `f`；`validate` 计算 IC、IR（接受阈值示例：IC > 0.03）；维护 `Z_next` 与 `H` 中的 effective / ineffective / deprecated。
+- **Screener（算法 2）**：若 `|Z_t|` 不足则返回空；`assess_regime` 基于 `M` 与 `H`；对每个因子算 suitability，排序后 `diversify` 取约 Top 10，形成带权重与方向的 `E_t`，并更新 `H`。
+- **Trader（算法 3）**：若 `E_t` 为空则返回；在 `construct_strategy` 探索暴露等；向量回测择优 `π_best`；记录 improved/rejected；最后 `live_trading` 在实现中可先为**模拟/占位**（真实下单需券商 API 与合规流程）。
+
+### 1.4 技术栈（约定）
+
+- Python **3.10+**
+- **pandas**, **numpy**, **beautifulsoup4**, **requests**（列表与部分基本面/网页抓取）
+- **sqlite3**（共享内存；必要时辅以 pickle 序列化大对象路径）
+- **Anthropic API** 或 **LangChain**（与 `.env` 配置二选一或并存，以代码实现为准）
+
+---
+
+## 二、拟议目录结构（Phase 0）
+
+下列路径为后续 Phase 1–5 的实现蓝图；当前仓库可能尚未包含全部文件。
+
+```text
+AlphaCrafter/
+├── README.md
+├── requirements.txt              # Phase 1：依赖锁定
+├── .env.example                  # Phase 1：环境变量模板（勿提交真实密钥）
+├── .gitignore
+├── data/
+│   ├── raw/                      # 原始抓取/下载
+│   └── processed/                # 清洗后的面板、中间表
+├── scripts/
+│   └── scrape_sp500.py           # Phase 1：S&P 500 成分抓取入口（CLI）
+├── alphacrafter/                 # 主 Python 包
+│   ├── __init__.py
+│   ├── config/                   # 加载 .env、路径、常量
+│   │   └── settings.py
+│   ├── memory/                   # Phase 1：H — SQLite schema、DAO、迁移
+│   │   ├── schema.sql
+│   │   └── shared_memory.py
+│   ├── data/                     # Phase 1：U、行情 pipeline
+│   │   ├── universe.py
+│   │   └── historical.py
+│   ├── agents/
+│   │   ├── miner.py              # Phase 2
+│   │   ├── screener.py           # Phase 3
+│   │   └── trader.py             # Phase 4
+│   ├── backtest/                 # Phase 4：向量化回测
+│   │   └── vectorized.py
+│   ├── orchestration/            # Phase 5：主循环
+│   │   └── loop.py
+│   └── utils/
+│       └── llm.py                # Anthropic / LangChain 封装
+└── tests/                        # 各阶段增量单测
+    └── ...
+```
+
+---
+
+## 三、本地 VS Code 部署步骤
+
+以下假设已安装 **Python 3.10+** 与 **Git**。
+
+1. **克隆或打开项目**  
+   在 VS Code 中：`文件 → 打开文件夹`，选择 `AlphaCrafter` 根目录。
+
+2. **创建虚拟环境（推荐）**  
+   在终端（VS Code 集成终端，`Ctrl+`` `）中执行：
+
+   ```powershell
+   cd e:\project\AlphaCrafter
+   python -m venv .venv
+   .\.venv\Scripts\Activate.ps1
+   ```
+
+   若执行策略限制脚本，可先运行：`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`。
+
+3. **安装依赖（Phase 1 将提供 `requirements.txt`）**  
+
+   ```powershell
+   pip install -U pip
+   pip install -r requirements.txt
+   ```
+
+4. **选择解释器**  
+   `Ctrl+Shift+P` → `Python: Select Interpreter` → 选择 `.venv` 下的 `python.exe`。
+
+5. **配置运行/调试**  
+   Phase 5 完成后可在 `.vscode/launch.json` 中配置入口（例如 `python -m alphacrafter ...`）；Phase 0 仅预留说明。
+
+---
+
+## 四、API 密钥与环境变量（`.env`）
+
+1. **复制模板**（Phase 1 将添加 `.env.example`）：
+
+   ```powershell
+   copy .env.example .env
+   ```
+
+2. **编辑 `.env`（不要提交到版本库）**  
+   典型变量（名称以最终实现为准，此处为约定）：
+
+   | 变量名 | 说明 |
+   |--------|------|
+   | `ANTHROPIC_API_KEY` | Anthropic Claude API 密钥（若直连 Anthropic） |
+   | `ANTHROPIC_MODEL` | 可选，如 `claude-3-5-sonnet-latest` |
+   | `LANGCHAIN_API_KEY` / `LANGCHAIN_TRACING_V2` | 若使用 LangChain 生态与追踪 |
+   | `ALPHACRAFTER_DATA_DIR` | 可选，数据根目录，默认 `./data` |
+   | `ALPHACRAFTER_DB_PATH` | 可选，SQLite 路径，默认 `./data/shared_memory.db` |
+
+3. **在代码中加载**  
+   推荐使用 `python-dotenv`，在应用入口或 `alphacrafter/config/settings.py` 中 `load_dotenv()`。
+
+---
+
+## 五、如何触发 S&P 500 数据抓取脚本
+
+Phase 1 将实现 `scripts/scrape_sp500.py`。预期用法示例（以最终实现 `--help` 为准）：
+
+```powershell
+cd e:\project\AlphaCrafter
+.\.venv\Scripts\Activate.ps1
+python scripts/scrape_sp500.py --out data/raw/sp500_tickers.csv
+```
+
+可选参数可能包括：输出格式、是否合并行业分类、请求间隔（礼貌爬取）等。抓取结果将供 `U` 与后续历史行情下载使用。
+
+---
+
+## 六、分阶段交付说明（与开发约定）
+
+| 阶段 | 内容 | 状态 |
+|------|------|------|
+| **Phase 0** | 本 README + 目录结构说明 | ✅ 当前阶段 |
+| **Phase 1** | 数据管道（S&P 500 抓取、历史行情）、SQLite `H` 表结构 | 待评审后实施 |
+| **Phase 2** | Miner：LLM 生成因子 + 安全执行与校验 | 待实施 |
+| **Phase 3** | Screener：体制评估 + suitability + diversify | 待实施 |
+| **Phase 4** | Trader：策略构造、向量化回测、`live_trading` 占位 | 待实施 |
+| **Phase 5** | 主编排循环串联三智能体 | 待实施 |
+
+**评审约定**：每个阶段完成后会暂停，请你审阅通过后再进入下一阶段。
+
+---
+
+## 七、免责声明
+
+本仓库用于研究与教育目的。任何回测结果不构成投资建议；实盘交易需自行承担风险并遵守当地法规与交易所规则。

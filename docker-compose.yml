@@ -1,0 +1,45 @@
+# 准备：在项目根目录放好 .env（从 .env.example 复制并填 Key）
+#
+# 构建镜像：
+#   docker compose build
+#
+# 首次或更新标普 500 列表：
+#   docker compose run --rm scrape-sp500
+#
+# 跑一轮编排（默认 20 标的、200 交易日；要改参数见下方）：
+#   docker compose run --rm orchestrate
+#
+# 自定义参数（写在服务名后面会覆盖 compose 里的 command）：
+#   docker compose run --rm orchestrate python scripts/run_alphacrafter.py --universe /app/data/raw/sp500_wiki.csv --tickers 50 --days 200 --sleep-panel 0.35
+
+x-alphacrafter: &alphacrafter-base
+  build: .
+  image: alphacrafter:local
+  working_dir: /app
+  volumes:
+    - ./data:/app/data
+  environment:
+    ALPHACRAFTER_DATA_DIR: /app/data
+  # 无 .env 时不会报错；有则注入 Key（DeepSeek 等）
+  env_file:
+    - path: .env
+      required: false
+
+services:
+  scrape-sp500:
+    <<: *alphacrafter-base
+    command: ["python", "scripts/scrape_sp500.py", "--out", "/app/data/raw/sp500_wiki.csv"]
+
+  orchestrate:
+    <<: *alphacrafter-base
+    command:
+      - python
+      - scripts/run_alphacrafter.py
+      - --universe
+      - /app/data/raw/sp500_wiki.csv
+      - --tickers
+      - "20"
+      - --days
+      - "200"
+      - --sleep-panel
+      - "0.35"
