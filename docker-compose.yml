@@ -11,6 +11,8 @@
 #
 # 自定义参数（写在服务名后面会覆盖 compose 里的 command）：
 #   docker compose run --rm orchestrate python scripts/run_alphacrafter.py --universe /app/data/raw/sp500_wiki.csv --tickers 50 --days 200 --sleep-panel 0.35
+# 论文 Table 1 回测段（固定 2024-01-01..2025-12-31）：
+#   docker compose run --rm orchestrate python scripts/run_alphacrafter.py --universe /app/data/raw/sp500_wiki.csv --split backtesting --tickers 20 --sleep-panel 0.35
 
 x-alphacrafter: &alphacrafter-base
   build: .

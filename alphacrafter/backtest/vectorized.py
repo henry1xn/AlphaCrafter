@@ -2,8 +2,20 @@
 
 from __future__ import annotations
 
+import os
+
 import numpy as np
 import pandas as pd
+
+
+def _bars_per_year() -> float:
+    """252 ~ equities; 365 ~ 24/7 daily crypto bars (set ALPHACRAFTER_BARS_PER_YEAR)."""
+    raw = os.getenv("ALPHACRAFTER_BARS_PER_YEAR", "").strip()
+    if raw:
+        return float(raw)
+    if os.getenv("ALPHACRAFTER_ASSET_CLASS", "").strip().lower() == "crypto":
+        return 365.0
+    return 252.0
 
 
 def cross_sectional_zscore(signals: pd.DataFrame) -> pd.DataFrame:
@@ -42,14 +54,15 @@ def backtest_long_short(
             "ann_return_pct": 0.0,
             "max_drawdown_pct": 0.0,
         }
+    bpy = _bars_per_year()
     mu = float(port.mean())
     sd = float(port.std(ddof=1))
-    sharpe = (mu / sd * np.sqrt(252.0)) if sd > 1e-12 else 0.0
+    sharpe = (mu / sd * np.sqrt(bpy)) if sd > 1e-12 else 0.0
     cum = float((1.0 + port).prod() - 1.0)
     n = int(len(port))
     equity = (1.0 + port).cumprod()
     end_eq = float(equity.iloc[-1])
-    ann_ret_pct = (end_eq ** (252.0 / max(n, 1)) - 1.0) * 100.0 if n > 0 else 0.0
+    ann_ret_pct = (end_eq ** (bpy / max(n, 1)) - 1.0) * 100.0 if n > 0 else 0.0
     running_max = equity.cummax()
     dd = equity / running_max - 1.0
     mdd_pct = float(dd.min()) * 100.0

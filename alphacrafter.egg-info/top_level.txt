@@ -1,4 +1,0 @@
-alphacrafter
-data
-scripts
-tests

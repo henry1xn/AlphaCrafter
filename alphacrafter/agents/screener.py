@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -108,11 +109,19 @@ class ScreenerAgent:
         hist = memory.recent_factor_events(8)
         tail = "\n".join(f"{r['outcome_meta']}" for r in hist) or "(none)"
         pack = load_prompt("screener_agent").strip()
-        tail = (
-            "You assess the equity market regime. Reply in plain text only — no markdown, no code fences. "
-            "Line 1: one snake_case label (letters, digits, underscore). "
-            "Line 2: one short rationale sentence."
-        )
+        if os.getenv("ALPHACRAFTER_ASSET_CLASS", "").strip().lower() == "crypto":
+            tail = (
+                "You assess the cryptocurrency cross-section regime (24/7 markets). "
+                "Reply in plain text only — no markdown, no code fences. "
+                "Line 1: one snake_case label (letters, digits, underscore). "
+                "Line 2: one short rationale sentence."
+            )
+        else:
+            tail = (
+                "You assess the equity market regime. Reply in plain text only — no markdown, no code fences. "
+                "Line 1: one snake_case label (letters, digits, underscore). "
+                "Line 2: one short rationale sentence."
+            )
         system = (pack + "\n\n--- Regime labeling task ---\n" + tail) if pack else tail
         user = (
             f"Market features JSON: {json.dumps(m, ensure_ascii=False)}\n"

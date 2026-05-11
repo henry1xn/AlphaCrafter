@@ -13,3 +13,12 @@ __pycache__/
 Thumbs.db
 .idea/
 *.log
+
+# Build / packaging (never commit)
+*.egg-info/
+dist/
+build/
+
+# Generated market data — run scripts/scrape_sp500.py after clone
+data/raw/*.csv
+data/processed/*.csv

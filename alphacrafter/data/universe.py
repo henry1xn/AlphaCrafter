@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pandas as pd
@@ -41,3 +42,38 @@ def project_relative(path: str | Path) -> Path:
     """Resolve path relative to project root if not absolute."""
     pp = Path(path)
     return pp if pp.is_absolute() else (PROJECT_ROOT / pp)
+
+
+def load_crypto_universe(
+    data_dir: str | Path,
+    *,
+    ticker_limit: int | None = None,
+    rank_by: str = "volume",
+    lookback_days: int | None = None,
+) -> pd.DataFrame:
+    """
+    Build universe **U** from filenames in ``data_dir`` (``*.csv`` / ``*.parquet``).
+
+    ``rank_by``: ``volume`` (default, liquidity proxy) or ``none`` (filename order).
+    ``ticker_limit``: keep top-N after ranking; ``None`` means all symbols.
+    """
+    from alphacrafter.config.settings import ORCH_TICKER_LIMIT
+    from alphacrafter.data.local_klines import list_kline_files, rank_crypto_symbols_by_volume, symbol_from_kline_path
+
+    rb = (rank_by or "volume").strip().lower()
+    if rb in {"none", "file", "name"}:
+        paths = list_kline_files(data_dir)
+        rows = [{"ticker": symbol_from_kline_path(p), "volume_score": 0.0} for p in paths]
+        ranked = pd.DataFrame(rows)
+    elif rb in {"volume", "vol"}:
+        lb = int(lookback_days) if lookback_days is not None else int(os.getenv("ALPHACRAFTER_CRYPTO_LOOKBACK_DAYS", "90") or "90")
+        ranked = rank_crypto_symbols_by_volume(data_dir, lookback_days=lb)
+    else:
+        raise ValueError("rank_by must be 'volume' or 'none' (market cap not available from OHLCV files).")
+    if ranked.empty:
+        raise FileNotFoundError(
+            f"No kline files (*.csv / *.parquet) found under: {Path(data_dir).resolve()}"
+        )
+    lim = int(ticker_limit if ticker_limit is not None else ORCH_TICKER_LIMIT)
+    out = ranked.head(lim)[["ticker"]].copy()
+    return out.reset_index(drop=True)

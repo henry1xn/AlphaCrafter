@@ -89,5 +89,31 @@ class TestOrchestrationInjectedPanel(unittest.TestCase):
             self.assertIsNotNone(out.get("trader"))
 
 
+class TestLibraryDisciplineInjectedPanel(unittest.TestCase):
+    """Injected panels skip auto training download (tests / advanced use)."""
+
+    def test_validation_split_injected_does_not_trigger_training_fetch_path(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "h.db"
+            init_database(p)
+            sm = SharedMemory(p)
+            code = "g = panel.groupby('ticker')['close']\nfactor = g.pct_change(2).fillna(0.0)\n"
+            sm.record_factor_event(code, 0.05, 0.5, "effective", in_library=True)
+            panel = _synthetic_panel()
+            try:
+                out = run_pipeline(
+                    memory=sm,
+                    panel=panel,
+                    run_miner=False,
+                    dataset_split="validation",
+                )
+            finally:
+                sm.close()
+            self.assertTrue(out.get("ok"))
+            self.assertEqual(out.get("library_discipline", {}).get("mode"), "injected_panel")
+            self.assertIsNone(out.get("miner"))
+            self.assertEqual(out.get("dataset_split"), "validation")
+
+
 if __name__ == "__main__":
     unittest.main()

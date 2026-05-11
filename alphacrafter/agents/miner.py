@@ -39,8 +39,10 @@ class MinerAgent:
         ic_accept: float | None = None,
         ic_retain: float | None = None,
         max_library_factors: int | None = None,
+        asset_class: str = "equity",
     ) -> None:
         self.memory = memory
+        self.asset_class = (asset_class or "equity").strip().lower()
         self.max_iterations = int(max_iterations if max_iterations is not None else MINER_MAX_ITERATIONS)
         self.ic_accept = float(ic_accept if ic_accept is not None else MINER_IC_ACCEPT)
         self.ic_retain = float(ic_retain if ic_retain is not None else MINER_IC_RETAIN)
@@ -80,9 +82,14 @@ class MinerAgent:
         lines = [f"- {r['outcome_meta']} ic={r['ic']} ir={r['ir']}" for r in hist]
         history = "\n".join(lines) if lines else "(empty)"
         sample = ", ".join(tickers[:40])
-        role = load_prompt("miner_agent")
+        if self.asset_class == "crypto":
+            role = load_prompt("miner_agent_crypto")
+            if not role.strip():
+                role = load_prompt("miner_agent")
+        else:
+            role = load_prompt("miner_agent")
         universal = ""
-        if os.getenv("ALPHACRAFTER_PROMPT_INCLUDE_UNIVERSAL", "1").strip().lower() not in {
+        if self.asset_class != "crypto" and os.getenv("ALPHACRAFTER_PROMPT_INCLUDE_UNIVERSAL", "1").strip().lower() not in {
             "0",
             "false",
             "no",
