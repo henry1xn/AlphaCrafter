@@ -14,6 +14,7 @@ from alphacrafter.agents.miner import MinerAgent, MinerRunSummary
 from alphacrafter.agents.screener import ScreenerAgent
 from alphacrafter.agents.trader import TraderAgent
 from alphacrafter.config.settings import ORCH_TICKER_LIMIT, PANEL_TRADING_DAYS
+from alphacrafter.backtest.vectorized import daily_portfolio_metrics, pivot_close_returns
 from alphacrafter.data.panel import add_forward_return, build_long_panel, build_long_panel_crypto
 from alphacrafter.data.splits import (
     EVAL_SPLITS,
@@ -93,6 +94,7 @@ def run_pipeline(
     tickers: list[str] | None = None,
     run_miner: bool = True,
     dataset_split: str | None = None,
+    artifacts_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     """
     One full pass over agents.
@@ -239,6 +241,10 @@ def run_pipeline(
         trader = TraderAgent(sm)
         trade = trader.run(panel, ensemble)
 
+        ret_w = pivot_close_returns(panel)
+        bench_r = ret_w.mean(axis=1).dropna() if not ret_w.empty else pd.Series(dtype=float)
+        bench_metrics = daily_portfolio_metrics(bench_r)
+
         out: dict[str, Any] = {
             "ok": True,
             "tickers_used": tickers_list,
@@ -252,6 +258,11 @@ def run_pipeline(
             "screener": scr_meta,
             "ensemble_id": getattr(ensemble, "ensemble_id", None),
             "regime": getattr(ensemble, "regime_label", None) if ensemble else None,
+            "benchmark": {
+                "label": "equal_weight_long_only_close_to_close",
+                "metrics": bench_metrics,
+                "n_days": int(bench_metrics.get("n", 0.0) or 0),
+            },
         }
         if trade is not None:
             out["trader"] = {
@@ -260,9 +271,15 @@ def run_pipeline(
                 "best_spec": trade.best_spec,
                 "live": trade.live_result,
                 "strategy_candidate_id": trade.strategy_candidate_id,
+                "equity_curve": trade.equity_curve,
             }
         else:
             out["trader"] = None
+
+        if artifacts_dir:
+            from alphacrafter.reporting.artifacts import write_pipeline_artifacts
+
+            out["artifacts"] = write_pipeline_artifacts(artifacts_dir, out, panel, trade)
         return out
     finally:
         if changed_asset:

@@ -86,7 +86,11 @@ class TestOrchestrationInjectedPanel(unittest.TestCase):
             self.assertTrue(out.get("ok"))
             self.assertIsNone(out.get("miner"))
             self.assertIsNotNone(out.get("ensemble_id"))
-            self.assertIsNotNone(out.get("trader"))
+            tr = out.get("trader")
+            self.assertIsNotNone(tr)
+            assert isinstance(tr, dict)
+            self.assertIn("equity_curve", tr)
+            self.assertIsInstance(tr["equity_curve"], list)
 
 
 class TestLibraryDisciplineInjectedPanel(unittest.TestCase):

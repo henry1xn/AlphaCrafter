@@ -24,6 +24,8 @@ class TraderResult:
     best_metrics: dict[str, float]
     strategy_candidate_id: int | None
     live_result: dict[str, Any]
+    """Daily points for PnL / equity chart (JSON-serializable)."""
+    equity_curve: list[dict[str, Any]]
 
 
 class TraderAgent:
@@ -157,10 +159,28 @@ class TraderAgent:
             json.dumps(live, ensure_ascii=False),
             "executed",
         )
+
+        sig_best = self.apply_strategy_spec(raw_sig, pi_best)
+        port_series, metrics_final = backtest_long_short(sig_best, returns, signal_lag=1)
+        metrics_best = metrics_final
+        curve: list[dict[str, Any]] = []
+        if not port_series.empty:
+            eq = (1.0 + port_series).cumprod()
+            for dt in port_series.index:
+                d = pd.Timestamp(dt).normalize()
+                curve.append(
+                    {
+                        "date": d.strftime("%Y-%m-%d"),
+                        "daily_ret": float(port_series.loc[dt]),
+                        "equity": float(eq.loc[dt]),
+                    }
+                )
+
         return TraderResult(
             best_spec=pi_best,
             best_score=float(r_best),
             best_metrics=metrics_best,
             strategy_candidate_id=cand_id_best,
             live_result=live,
+            equity_curve=curve,
         )

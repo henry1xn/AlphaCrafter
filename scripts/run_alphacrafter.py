@@ -62,6 +62,16 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Only print JSON (no human-readable backtest summary lines).",
     )
+    p.add_argument(
+        "--artifacts-dir",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help=(
+            "Write summary.json, benchmark_equal_weight_equity.csv, optional trader_best_equity.csv, "
+            "and equity_curves.png (needs matplotlib)."
+        ),
+    )
     args = p.parse_args(argv)
 
     crypto_dir = args.crypto_data_dir
@@ -78,9 +88,28 @@ def main(argv: list[str] | None = None) -> int:
         trading_days=args.days,
         panel_sleep=args.sleep_panel,
         dataset_split=args.split,
+        artifacts_dir=args.artifacts_dir,
     )
     print(json.dumps(summary, indent=2, default=str))
+    art = summary.get("artifacts")
+    if isinstance(art, dict) and art:
+        print("\n[Artifacts]", file=sys.stderr)
+        for k, v in sorted(art.items()):
+            print(f"  {k}: {v}", file=sys.stderr)
     if not args.json_only and summary.get("ok"):
+        bench = summary.get("benchmark") or {}
+        bm = bench.get("metrics") if isinstance(bench, dict) else None
+        if isinstance(bm, dict) and bm.get("n", 0):
+            ar = bm.get("ann_return_pct")
+            sr = bm.get("sharpe_ann")
+            mdd = bm.get("max_drawdown_pct")
+            if ar is not None and sr is not None and mdd is not None:
+                print(
+                    "\n[Benchmark / 等权多头基准] close→close 日收益等权\n"
+                    f"  AR(%):   {ar:.4f}\n"
+                    f"  SR:      {sr:.4f}\n"
+                    f"  MDD(%):  {mdd:.4f}\n"
+                )
         tr = summary.get("trader")
         if isinstance(tr, dict) and tr.get("best_metrics"):
             m = tr["best_metrics"]

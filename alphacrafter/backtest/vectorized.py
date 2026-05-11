@@ -25,6 +25,42 @@ def cross_sectional_zscore(signals: pd.DataFrame) -> pd.DataFrame:
     return z.replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
 
+def daily_portfolio_metrics(port: pd.Series) -> dict[str, float]:
+    """
+    Sharpe / CAGR / MDD from a **daily portfolio return** series (already aligned to holding period).
+    """
+    port = pd.Series(port, dtype=float).dropna()
+    if port.empty:
+        return {
+            "sharpe_ann": 0.0,
+            "mean_daily": 0.0,
+            "cum_return": 0.0,
+            "n": 0.0,
+            "ann_return_pct": 0.0,
+            "max_drawdown_pct": 0.0,
+        }
+    bpy = _bars_per_year()
+    mu = float(port.mean())
+    sd = float(port.std(ddof=1))
+    sharpe = (mu / sd * np.sqrt(bpy)) if sd > 1e-12 else 0.0
+    cum = float((1.0 + port).prod() - 1.0)
+    n = int(len(port))
+    equity = (1.0 + port).cumprod()
+    end_eq = float(equity.iloc[-1])
+    ann_ret_pct = (end_eq ** (bpy / max(n, 1)) - 1.0) * 100.0 if n > 0 else 0.0
+    running_max = equity.cummax()
+    dd = equity / running_max - 1.0
+    mdd_pct = float(dd.min()) * 100.0
+    return {
+        "sharpe_ann": float(sharpe),
+        "mean_daily": mu,
+        "cum_return": cum,
+        "n": float(n),
+        "ann_return_pct": float(ann_ret_pct),
+        "max_drawdown_pct": float(mdd_pct),
+    }
+
+
 def backtest_long_short(
     signals: pd.DataFrame,
     returns: pd.DataFrame,
@@ -45,35 +81,7 @@ def backtest_long_short(
     denom = z.abs().sum(axis=1).replace(0, np.nan)
     port = (z * fwd).sum(axis=1) / denom
     port = port.dropna()
-    if port.empty:
-        return port, {
-            "sharpe_ann": 0.0,
-            "mean_daily": 0.0,
-            "cum_return": 0.0,
-            "n": 0.0,
-            "ann_return_pct": 0.0,
-            "max_drawdown_pct": 0.0,
-        }
-    bpy = _bars_per_year()
-    mu = float(port.mean())
-    sd = float(port.std(ddof=1))
-    sharpe = (mu / sd * np.sqrt(bpy)) if sd > 1e-12 else 0.0
-    cum = float((1.0 + port).prod() - 1.0)
-    n = int(len(port))
-    equity = (1.0 + port).cumprod()
-    end_eq = float(equity.iloc[-1])
-    ann_ret_pct = (end_eq ** (bpy / max(n, 1)) - 1.0) * 100.0 if n > 0 else 0.0
-    running_max = equity.cummax()
-    dd = equity / running_max - 1.0
-    mdd_pct = float(dd.min()) * 100.0
-    metrics = {
-        "sharpe_ann": float(sharpe),
-        "mean_daily": mu,
-        "cum_return": cum,
-        "n": float(n),
-        "ann_return_pct": float(ann_ret_pct),
-        "max_drawdown_pct": float(mdd_pct),
-    }
+    metrics = daily_portfolio_metrics(port)
     return port, metrics
 
 
