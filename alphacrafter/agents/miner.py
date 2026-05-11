@@ -116,7 +116,7 @@ class MinerAgent:
             "Write ONE new factor. Output only a ```python fenced block."
         )
         max_toks = int(os.getenv("ALPHACRAFTER_MINER_MAX_TOKENS", "1400") or "1400")
-        raw = complete_text(system, user, max_tokens=max_toks)
+        raw = complete_text(system, user, max_tokens=max_toks, agent="miner")
         return extract_python_block(raw)
 
     def _termination(self, iterations: int, accepted_this_run: int) -> bool:

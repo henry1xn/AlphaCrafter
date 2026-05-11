@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -10,28 +11,104 @@ import pandas as pd
 _KLINE_SUFFIXES = (".csv", ".parquet", ".pq")
 
 
-def symbol_from_kline_path(path: Path) -> str:
-    """BTCUSDT.csv -> BTCUSDT; ETH-USDT.parquet -> ETHUSDT."""
+def _kline_file_ok(p: Path) -> bool:
+    """True if path looks like a k-line data file (not only strict .suffix — handles odd FS / names)."""
+    if not p.is_file():
+        return False
+    s = p.suffix.lower()
+    if s in _KLINE_SUFFIXES:
+        return True
+    n = p.name.lower()
+    return n.endswith(".parquet.gz") or n.endswith(".csv.gz")
+
+
+def symbol_from_kline_path(path: Path, *, data_root: Path | None = None) -> str:
+    """
+    Resolve ticker: prefer parent folder under ``data_root`` (e.g. .../klines/BTCUSDT/monthly.parquet).
+
+    Otherwise infer from filename stem (e.g. ``BTCUSDT-1d-2024-01`` → ``BTCUSDT``).
+    """
+    if data_root is not None:
+        try:
+            rel = path.resolve().relative_to(data_root.resolve())
+            parts = rel.parts
+            if len(parts) >= 2:
+                sym_dir = parts[0].upper().replace("-", "").replace("_", "")
+                if sym_dir and len(sym_dir) >= 4:
+                    return sym_dir
+        except ValueError:
+            pass
     stem = path.stem.upper().strip()
+    # Binance-style flat name: BTCUSDT-1d-2024-01
+    for sep in ("-", "_"):
+        if sep in stem:
+            head = stem.split(sep)[0]
+            if len(head) >= 6 and (
+                head.endswith("USDT")
+                or head.endswith("USDC")
+                or head.endswith("BUSD")
+                or head.endswith("USD")
+            ):
+                return head.replace("-", "").replace("_", "")
     return stem.replace("-", "").replace("_", "")
 
 
 def list_kline_files(data_dir: str | Path) -> list[Path]:
+    """
+    Collect k-line files under ``data_dir``.
+
+    - **Flat**: ``ROOT/BTCUSDT.parquet``
+    - **Binance-style** (常见): ``ROOT/ADAUSDT/*.parquet`` — 对每个一级子目录做 ``rglob``，
+      避免在部分 NFS 上 ``ROOT.glob('**/*.parquet')`` 不返回结果的问题。
+
+    关闭子目录扫描：``ALPHACRAFTER_CRYPTO_SCAN_SUBDIRS=0``（仅根目录下的文件）。
+    """
     root = Path(data_dir).expanduser().resolve()
     if not root.is_dir():
         raise FileNotFoundError(f"Crypto data directory not found: {root}")
+    seen: set[str] = set()
     out: list[Path] = []
-    for p in sorted(root.iterdir()):
-        if p.is_file() and p.suffix.lower() in _KLINE_SUFFIXES:
+
+    def add(p: Path) -> None:
+        key = str(p.resolve())
+        if key not in seen:
+            seen.add(key)
             out.append(p)
-    return out
+
+    scan_sub = os.getenv("ALPHACRAFTER_CRYPTO_SCAN_SUBDIRS", "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+
+    for p in sorted(root.iterdir()):
+        if p.is_file() and _kline_file_ok(p):
+            add(p)
+        elif scan_sub and p.is_dir():
+            try:
+                for q in p.rglob("*"):
+                    if _kline_file_ok(q):
+                        add(q)
+            except OSError:
+                continue
+
+    if scan_sub and not out:
+        for q in root.rglob("*"):
+            if _kline_file_ok(q):
+                add(q)
+
+    return sorted(out, key=lambda x: str(x))
 
 
 def _read_any(path: Path) -> pd.DataFrame:
+    n = path.name.lower()
     suf = path.suffix.lower()
-    if suf == ".csv":
-        return pd.read_csv(path)
+    if suf == ".csv" or n.endswith(".csv.gz"):
+        return pd.read_csv(path, compression="infer")
     if suf in {".parquet", ".pq"}:
+        return pd.read_parquet(path)
+    if n.endswith(".parquet.gz") or n.endswith(".pq.gz"):
         return pd.read_parquet(path)
     raise ValueError(f"Unsupported format: {path}")
 
@@ -134,22 +211,32 @@ def _aggregate_to_daily_if_needed(df: pd.DataFrame) -> pd.DataFrame:
     return agg
 
 
-def read_single_kline_file(path: Path, ticker: str | None = None) -> pd.DataFrame:
+def read_single_kline_file(
+    path: Path,
+    ticker: str | None = None,
+    *,
+    data_root: Path | None = None,
+) -> pd.DataFrame:
     """Parse one file into long-format columns: date, open, high, low, close, volume, ticker."""
     raw = _read_any(path)
     base = _rename_ohlcv(raw)
     base = _aggregate_to_daily_if_needed(base)
-    sym = ticker or symbol_from_kline_path(path)
+    sym = ticker or symbol_from_kline_path(path, data_root=data_root)
     base["ticker"] = sym
     base = base.sort_values("date").reset_index(drop=True)
     return base[["date", "ticker", "open", "high", "low", "close", "volume"]]
 
 
-def volume_score_for_symbol(path: Path, *, lookback_days: int = 90) -> tuple[str, float]:
+def volume_score_for_symbol(
+    path: Path,
+    *,
+    data_root: Path,
+    lookback_days: int = 90,
+) -> tuple[str, float]:
     """Approximate liquidity: sum(volume) over last ``lookback_days`` calendar days in file."""
-    tkr = symbol_from_kline_path(path)
+    tkr = symbol_from_kline_path(path, data_root=data_root)
     try:
-        df = read_single_kline_file(path, ticker=tkr)
+        df = read_single_kline_file(path, ticker=tkr, data_root=data_root)
     except Exception:
         return tkr, 0.0
     if df.empty:
@@ -168,18 +255,37 @@ def rank_crypto_symbols_by_volume(
     lookback_days: int = 90,
 ) -> pd.DataFrame:
     """
-    Discover all symbols from filenames; rank by recent total volume (proxy for liquidity).
-
-    Market-cap is not available from OHLCV files — use ``ALPHACRAFTER_CRYPTO_RANK_BY=volume`` only.
+    Discover symbols; rank by recent total volume (summed across all files per ticker).
     """
+    root = Path(data_dir).expanduser().resolve()
     rows: list[dict[str, object]] = []
-    for path in list_kline_files(data_dir):
-        tkr, score = volume_score_for_symbol(path, lookback_days=lookback_days)
-        rows.append({"ticker": tkr, "volume_score": score, "path": str(path)})
+    for path in list_kline_files(root):
+        tkr, score = volume_score_for_symbol(path, data_root=root, lookback_days=lookback_days)
+        rows.append({"ticker": tkr, "volume_score": score})
     if not rows:
-        return pd.DataFrame(columns=["ticker", "volume_score", "path"])
-    out = pd.DataFrame(rows).sort_values("volume_score", ascending=False).reset_index(drop=True)
-    return out
+        return pd.DataFrame(columns=["ticker", "volume_score"])
+    df = pd.DataFrame(rows)
+    out = df.groupby("ticker", as_index=False)["volume_score"].sum()
+    return out.sort_values("volume_score", ascending=False).reset_index(drop=True)
+
+
+def _dedupe_panel_dates(out: pd.DataFrame) -> pd.DataFrame:
+    """Merge duplicate (ticker, date) from multiple monthly files."""
+    if out.empty or not out.duplicated(subset=["ticker", "date"]).any():
+        return out.sort_values(["date", "ticker"]).reset_index(drop=True)
+    return (
+        out.groupby(["ticker", "date"], sort=False)
+        .agg(
+            open=("open", "first"),
+            high=("high", "max"),
+            low=("low", "min"),
+            close=("close", "last"),
+            volume=("volume", "sum"),
+        )
+        .reset_index()
+        .sort_values(["date", "ticker"])
+        .reset_index(drop=True)
+    )
 
 
 def load_crypto_long_panel(
@@ -193,8 +299,7 @@ def load_crypto_long_panel(
     """
     Concatenate local klines for ``tickers`` into one long panel (24/7 calendar, no Yahoo).
 
-    If ``start``/``end`` omitted, uses last ``trading_days`` **calendar** days ending today
-    (bars-per-day varies for crypto — this is an approximate window).
+    If ``start``/``end`` omitted, uses last ``trading_days`` **calendar** days ending today.
     """
     root = Path(data_dir).expanduser().resolve()
     end_d = end or date.today()
@@ -205,11 +310,11 @@ def load_crypto_long_panel(
     lo = pd.Timestamp(start_d)
     hi = pd.Timestamp(end_d) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
     for path in list_kline_files(root):
-        sym = symbol_from_kline_path(path)
+        sym = symbol_from_kline_path(path, data_root=root)
         if sym not in want:
             continue
         try:
-            df = read_single_kline_file(path, ticker=sym)
+            df = read_single_kline_file(path, ticker=sym, data_root=root)
         except Exception:
             continue
         if df.empty:
@@ -221,4 +326,4 @@ def load_crypto_long_panel(
     if not frames:
         return pd.DataFrame()
     out = pd.concat(frames, ignore_index=True)
-    return out.sort_values(["date", "ticker"]).reset_index(drop=True)
+    return _dedupe_panel_dates(out)

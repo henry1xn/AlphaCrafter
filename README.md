@@ -1,182 +1,221 @@
-# AlphaCrafter
+# AlphaCrafter（服务器加密货币回测）
 
-基于多智能体（Miner / Screener / Trader）与共享内存（SQLite）的量化研究与交易框架复现。
-
-**默认数据路径（推荐）：** 在本地或服务器目录中放置 **按交易对分文件的加密货币 K 线**（`*.csv` / `*.parquet`），通过 `--crypto-data-dir` 或环境变量 `ALPHACRAFTER_CRYPTO_DATA_DIR` 指向该目录即可运行，**无需 Yahoo、无需维基 S&P500 列表**。  
-可选遗留路径：仍支持 `--universe` + Yahoo 拉取美股日线（需 `requests` 访问 Yahoo）。
+多智能体（**Miner / Screener / Trader**）+ **SQLite 共享内存 H**，在**本地 Parquet/CSV K 线**上做因子挖掘、体制筛选与向量回测。  
+**当前文档以你在服务器上的路径为准**，不再展开美股 Yahoo / 维基流程（相关脚本仍保留在仓库中，需要时自行使用）。
 
 ---
 
-## 加密货币 K 线：目录与列名
+## 你要做的三件事
 
-在**同一目录**下放多个文件，文件名即标的，例如：`BTCUSDT.csv`、`ETHUSDT.parquet`。  
-支持的列名（不区分大小写，自动映射）：
-
-- 时间：`open_time` / `timestamp` / `time` / `datetime` / `date` / `ts`（可为 Unix ms/s 或 ISO 字符串）
-- OHLCV：`open, high, low, close`（或 `o/h/l/c`），`volume`（或 `quote_volume` 等）
-
-若单标的存在**同一天多根 K 线**（如小时线），加载时会**按日历日聚合为日 OHLCV**（24/7 连续序列，不按美股交易日剔除周末）。
-
-**宇宙截断：** 默认按近 `ALPHACRAFTER_CRYPTO_LOOKBACK_DAYS`（默认 90）日历日内的 **成交量合计** 排序，取 `--tickers` 上限；`--crypto-rank-by none` 则按文件名顺序取前 N。财报市值无法从 OHLCV 推断，故不提供 `marketcap` 排序。
+1. **配好环境**：Python 依赖 + `.env` 里的 **LLM API**。  
+2. **指对 K 线根目录**：例如  
+   `/gpudata/crypto/data/parquet_data/futures/um/monthly/klines`  
+   （支持**子目录**下放每个交易对的多个 parquet，见下文「数据目录」）。  
+3. **跑一条命令**：`scripts/run_alphacrafter.py`，在终端看 **JSON 回测指标** + 可选 **LLM 交互日志**。
 
 ---
 
-## 纯净部署：腾讯云 Linux（加密货币模式）
+## 一、服务器上从头到尾怎么跑（按顺序复制）
 
-需能访问你的 **LLM API**；数据为**本机目录**（可将远程盘挂载到该路径）。
+以下假设：**Linux**、已能 `ssh` 登录、已安装 **conda** 与 **git**；项目在 `~/AlphaCrafter`，数据已在 **`/gpudata/crypto/data/parquet_data/futures/um/monthly/klines`**（只读即可）。
 
-### A. Python 虚拟环境
+### 1）登录并进入工作目录
 
 ```bash
-sudo apt update && sudo apt install -y git python3 python3-venv python3-pip
-git clone https://github.com/henry1xn/AlphaCrafter.git
-cd AlphaCrafter
-bash scripts/setup_linux.sh
-source .venv/bin/activate
-nano .env   # OPENAI_API_KEY、ALPHACRAFTER_LLM_PROVIDER=openai 等；可选 ALPHACRAFTER_CRYPTO_DATA_DIR=/path/to/klines
+ssh <你的账号>@<服务器>
+mkdir -p ~/projects && cd ~/projects
+```
 
-# 示例：Table 1 回测段 + 本地 K 线（把 /data/crypto 换成你的路径）
+### 2）拉代码
+
+```bash
+git clone https://github.com/<你的用户名>/AlphaCrafter.git
+cd AlphaCrafter
+```
+
+（没有 GitHub 时，用 `scp`/`rsync` 把本机整个项目目录拷到 `~/projects/AlphaCrafter` 亦可。）
+
+### 3）Conda 环境与依赖
+
+```bash
+conda create -n alphacrafter python=3.11 -y
+conda activate alphacrafter
+pip install -U pip setuptools wheel
+pip install -r requirements.txt
+pip install -e .
+```
+
+### 4）环境变量（必改 LLM）
+
+```bash
+cp .env.example .env
+nano .env
+```
+
+至少保证（见第二节表格）：
+
+- `OPENAI_API_KEY`（或你用的兼容接口 Key）  
+- `ALPHACRAFTER_LLM_PROVIDER=openai`（DeepSeek 等）  
+- 建议写死数据目录（与命令行二选一即可）：  
+  `ALPHACRAFTER_CRYPTO_DATA_DIR=/gpudata/crypto/data/parquet_data/futures/um/monthly/klines`
+
+### 5）确认数据目录可读
+
+```bash
+ls /gpudata/crypto/data/parquet_data/futures/um/monthly/klines | head
+```
+
+应能看到交易对子目录或 `.parquet` 文件。若权限不足，需找管理员给 `hm` 用户读权限或加入相应组。
+
+### 6）自检（可选，不耗 API）
+
+```bash
+conda activate alphacrafter
+cd ~/projects/AlphaCrafter
+ALPHACRAFTER_LLM_PROVIDER=stub python -m unittest discover -s tests -p "test_*.py" -q
+```
+
+### 7）正式跑一轮（Table 1「回测」窗 + 本地 K 线）
+
+```bash
+conda activate alphacrafter
+cd ~/projects/AlphaCrafter
+
 python scripts/run_alphacrafter.py \
-  --crypto-data-dir /data/crypto \
+  --crypto-data-dir /gpudata/crypto/data/parquet_data/futures/um/monthly/klines \
   --split backtesting \
   --tickers 20 \
   --crypto-rank-by volume
 ```
 
-### B. Docker（把宿主机的 K 线目录挂进容器）
-
-在 `docker-compose.yml` 里为服务增加 volume，例如 `- /host/crypto:/data/crypto:ro`，然后：
-
-```bash
-docker compose run --rm orchestrate python scripts/run_alphacrafter.py \
-  --crypto-data-dir /data/crypto \
-  --split backtesting \
-  --tickers 20
-```
-
-### 论文 Table 1 日历分段（与 README 原逻辑一致）
-
-使用 `--split` 指定阶段（**日历日**边界不变；用于过滤本地 K 线的 `date`）：
-
-```bash
-python scripts/run_alphacrafter.py \
-  --crypto-data-dir /path/to/klines \
-  --split backtesting \
-  --tickers 20
-```
-
-可选值：`training`、`validation`、`backtesting`、`live_trading`（别名：`train`、`val`、`bt`、`live`）。也可在 `.env` 中设置 `ALPHACRAFTER_PAPER_SPLIT`。
-
-#### 因子库 Z：仅在训练窗写入（与论文分段一致）
-
-当 **`--split` 为 `validation` / `backtesting` / `live_trading`** 且数据由本进程从 **本地目录或 Yahoo** 加载时：
-
-1. **先**在 **training** 窗（2016-01-01 — 2022-12-31）上运行 **Miner**（及可选 builtin seed），**仅此窗可向 Z 写入**。  
-2. **再**在当前阶段窗上只跑 **Screener → Trader**；eval 窗 **不写 Z**（`miner_seed.reason`：`eval_phase_no_Z_writes`）。  
-3. JSON 字段 **`library_discipline`** 标明 `data_source: crypto_local` 或 `yahoo`。
-
-`--split training`：Miner → Screener → Trader 均在训练窗。
-
-**单元测试里注入的 `panel`** 仍为 `injected_panel` 模式，不自动拉训练窗。
+- 若已在 `.env` 里设置了 `ALPHACRAFTER_CRYPTO_DATA_DIR`，可省略 `--crypto-data-dir`，只保留 `--split` 等参数。  
+- 长时间任务建议：`screen` / `tmux` 或 `nohup ... > run.log 2>&1 &`。
 
 ---
 
-## 遗留：美股 Yahoo + 维基宇宙（可选）
+## 二、你需要改哪些「参数」（`.env` 与命令行）
 
-```bash
-python scripts/scrape_sp500.py --out data/raw/sp500_wiki.csv
-python scripts/run_alphacrafter.py --universe data/raw/sp500_wiki.csv --tickers 20 --days 200 --sleep-panel 0.35
-```
+### 必改（否则无法调真实大模型）
 
-### Docker（美股示例）
+| 位置 | 变量 / 行为 | 说明 |
+|------|-------------|------|
+| `.env` | `OPENAI_API_KEY` | DeepSeek / 其它 OpenAI 兼容网关的密钥 |
+| `.env` | `ALPHACRAFTER_LLM_PROVIDER` | 例如 `openai`；勿与已填的 `ANTHROPIC_API_KEY` 冲突时仍想用 DeepSeek，请显式设为 `openai` |
 
-```bash
-docker compose run --rm scrape-sp500
-docker compose run --rm orchestrate \
-  python scripts/run_alphacrafter.py \
-  --universe /app/data/raw/sp500_wiki.csv \
-  --split backtesting \
-  --tickers 20 \
-  --sleep-panel 0.35
-```
+### 强烈建议改（决定用哪段数据、多少标的）
 
-### 自检（可选）
+| 位置 | 变量 / CLI | 说明 |
+|------|------------|------|
+| `.env` 或 CLI | `ALPHACRAFTER_CRYPTO_DATA_DIR` / `--crypto-data-dir` | K 线根目录，**二选一即可** |
+| CLI | `--split` | `training` / `validation` / `backtesting` / `live_trading`（论文 Table 1 日历切在 `date` 上过滤） |
+| CLI | `--tickers` | 参与回测的标的数量上限；越大越慢 |
+| `.env` 或 CLI | `ALPHACRAFTER_CRYPTO_RANK_BY` / `--crypto-rank-by` | `volume`：按近 N 日成交量和排序取前 `--tickers`；`none`：按扫描顺序取前 N |
+| `.env` | `ALPHACRAFTER_CRYPTO_LOOKBACK_DAYS` | 排序用成交量窗口（默认 90 日历日） |
+| `.env` | `ALPHACRAFTER_CRYPTO_SCAN_SUBDIRS` | 默认 `1`：递归扫子目录（适配 `.../klines/BTCUSDT/*.parquet`）；`0` 只扫根目录一层文件 |
 
-```bash
-source .venv/bin/activate
-python -m unittest discover -s tests -p "test_*.py" -v
-```
+### 常用调参（影响因子是否进库、回测探索范围）
 
-### 说明（与论文「完全复现」还差什么）
+| `.env` 变量 | 作用 |
+|-------------|------|
+| `ALPHACRAFTER_MINER_IC_ACCEPT` | Miner 接受因子 IC 下限（默认 0.03） |
+| `ALPHACRAFTER_MINER_MAX_ITERATIONS` | Miner 每轮最多生成次数 |
+| `ALPHACRAFTER_TRADER_MAX_EXPLORATIONS` | Trader 网格尝试次数上限 |
+| `ALPHACRAFTER_BARS_PER_YEAR` | 年化用 bar 数；不设且为 crypto 时默认 **365** |
+| `ALPHACRAFTER_DISABLE_BUILTIN_SEED=1` | 禁止在 Z 为空时用内置因子 seed（更难跑通端到端，仅当你要严格只用 LLM 因子时） |
 
-当前已实现：**Table 1 日历切分**、**验证/回测/实盘窗内不向 Z 写入**（训练窗独占 Miner + seed）、以及 **Screener / Trader 在对应窗上的评估**。论文表格中的绝对数值仍依赖 **同款标的全集、更长样本、超参与随机种子** 等；本仓库优先保证 **流程与泄露控制** 合理，数值需在云上按论文规模自行复现实验。
+### 日志与落盘路径
 
----
+| `.env` 变量 | 作用 |
+|-------------|------|
+| `ALPHACRAFTER_DATA_DIR` | 数据根；默认项目下 `data/`（SQLite、LLM 日志默认在此树下） |
+| `ALPHACRAFTER_DB_PATH` | 共享内存 SQLite；不设则为 `<DATA_DIR>/shared_memory.db` |
+| `ALPHACRAFTER_LLM_LOG` | `1` 开（默认）/ `0` 关 LLM JSONL |
+| `ALPHACRAFTER_LLM_LOG_PATH` | 自定义 LLM 日志文件；不设则为 `<DATA_DIR>/logs/llm_interactions.jsonl` |
+| `ALPHACRAFTER_LLM_LOG_PREVIEW_CHARS` | 每条 JSON 里 system/user/response 预览最大字符数 |
 
-## 一、架构总览
-
-### 1.1 符号与组件映射
-
-| 符号 | 含义 | 实现要点 |
-|------|------|----------|
-| **Z** | 因子库 | 已通过检验的因子公式集合（及元数据） |
-| **U** | 资产宇宙 | 本地 K 线文件名推导的交易对列表，或 legacy CSV 宇宙 |
-| **H** | 共享内存 | 中央 SQLite：因子代码、IC/IR、市场体制日志、策略与回测/执行结果 |
-| **M** | 市场状态 | 波动、趋势等可由行情聚合的指标，供 Screener 体制判断 |
-| **E** | 因子组合 | 经筛选、赋权、方向的因子子集 |
-| **R̂** | 市场体制 | LLM 对当前波动/趋势等的评估标签 |
-| **π** | 策略 | 由 Trader 构造并经回测择优的策略描述与参数 |
-
-### 1.2 数据流（逻辑）
-
-```text
-[数据源: 本地 crypto K 线目录 或 S&P500+Yahoo（可选）]
-        │
-        ▼
-   [Data Pipeline] ──写入──► [SQLite: H]
-        ▲                        │
-        │                        ├── Miner: 生成/校验因子 → 更新 Z 与 H
-        │                        ├── Screener: M,H,Z → R̂,E → 写 H
-        │                        └── Trader: E,R̂,H → π,回测,（模拟）实盘 → 写 H
-        │
-[Orchestration 主循环按阶段调度上述智能体]
-```
-
-### 1.3 智能体职责（与伪代码对应）
-
-- **Miner**：由 LLM 生成 Pandas 因子并校验 IC/IR（阈值见 `.env`）；维护因子库 **Z**。
-- **Screener**：体制评估、因子 suitability、组合成 **E**。
-- **Trader**：策略网格搜索、向量回测；`live_trading` 为**模拟占位**（非真实券商）。
-
-### 1.4 技术栈
-
-- Python **3.10+**
-- **pandas**, **numpy**, **requests**, **beautifulsoup4**, **lxml**
-- **SQLite**（`data/shared_memory.db`）
-- **LLM**：Anthropic / OpenAI 兼容（DeepSeek）/ MiniMax / `stub`（见 `alphacrafter/utils/llm.py`）
+完整列表仍以 **`.env.example`** 为准。
 
 ---
 
-## 二、目录结构（当前）
+## 三、跑完后「结论」怎么看
 
-```text
-AlphaCrafter/
-├── Dockerfile / docker-compose.yml
-├── requirements.txt / pyproject.toml
-├── .env.example
-├── scripts/
-│   ├── setup_linux.sh       # Linux 一键安装
-│   ├── scrape_sp500.py
-│   └── run_alphacrafter.py  # 编排入口（含 --split）
-├── alphacrafter/data/local_klines.py  # 本地 K 线读取
-├── data/raw/                # 可选：维基抓取 CSV（默认不提交）
-├── tests/
-└── README.md
+### 1）终端里的回测结果（主结论）
+
+`python scripts/run_alphacrafter.py ...` 会打印：
+
+- 一大段 **`ok`: true/false** 的 **JSON**。重点字段：  
+  - **`trader.best_metrics`**：`sharpe_ann`、`ann_return_pct`（年化收益 %）、`max_drawdown_pct`、`cum_return`、`n`  
+  - **`trader.best_spec`**：本次最优的 clip/gross/net_bias  
+  - **`regime`**、**`ensemble_id`**、**`miner`** / **`miner_seed`**：辅助判断因子是否主要来自 LLM 或 seed  
+  - **`library_discipline`**：是否 `paper_eval`（eval 段不写 Z）等  
+
+- JSON 之后若未加 `--json-only`，还有几行 **`AR(%)` / `SR` / `MDD(%)`** 摘要（与 `trader.best_metrics` 一致）。
+
+可把整段输出重定向留档：
+
+```bash
+python scripts/run_alphacrafter.py ... 2>&1 | tee run_$(date +%F_%H%M).log
 ```
+
+### 2）大模型交互过程（Miner / Screener）
+
+默认写入 **JSON Lines**（一行一次 `complete_text` 调用）：
+
+```bash
+# 默认路径（未改 ALPHACRAFTER_DATA_DIR 时）
+tail -n 20 ~/projects/AlphaCrafter/data/logs/llm_interactions.jsonl
+```
+
+每行 JSON 含：`ts_iso`、`agent`（`miner` / `screener`）、`provider`、`model`、`system_preview`、`user_preview`、`response_preview` 等。  
+若装了 `jq`，可按智能体过滤：
+
+```bash
+grep '"agent": "miner"' data/logs/llm_interactions.jsonl | tail -n 3
+```
+
+### 3）SQLite 里的结构化记录（H）
+
+默认库文件：**`<DATA_DIR>/shared_memory.db`**（与上表一致）。可用 [DB Browser for SQLite](https://sqlitebrowser.org/) 或：
+
+```bash
+sqlite3 data/shared_memory.db ".tables"
+```
+
+表内含因子事件、策略候选、执行记录等（随 Miner/Screener/Trader 写入）。
+
+### 4）若 `ok`: false 或 `empty_panel`
+
+- **日期与数据是否重叠**：Table 1 的 `training` 为 2016–2022，若 K 线只有近几年，训练窗会空 → 可先试 **`--split training`** 且保证数据覆盖该区间，或暂时用**无 `--split`** 的滚动窗口（仅用最近 `--days` 日历跨度，见代码 `run_pipeline` 的 rolling 分支）。  
+- **目录是否扫到文件**：确认 `ALPHACRAFTER_CRYPTO_SCAN_SUBDIRS=1`，且路径下确有 `.parquet`/`.csv`。  
+- **列名**：需含时间列 + OHLC（volume 可缺省为 0）。  
 
 ---
 
-## 三、Windows 本地（Anaconda / venv）
+## 四、数据目录约定（与你的 `.../monthly/klines`）
+
+- **递归扫描**（默认开启）：会收集根目录及所有子目录下的 `*.parquet` / `*.csv` / `*.pq`。  
+- **标的推断**：若文件在子目录中，例如 `.../klines/BTCUSDT/xxx.parquet`，**交易对名取子目录名 `BTCUSDT`**。若文件全在根目录且文件名为 `BTCUSDT-1d-2024-01.parquet` 这类，会取 **`BTCUSDT-`** 前缀作为标的。  
+- **同一标的多文件**（如多个月度 parquet）：在相同 `date` 上会 **合并 OHLCV**（volume 相加，high/max、low/min 等），再进入后续截面逻辑。
+
+若你的实际路径比上述更深一层，只要把 **`--crypto-data-dir` 指到仍包含各 `SYMBOL/` 子目录的那一层**即可。
+
+---
+
+## 五、多智能体流程与论文对齐（简述）
+
+| 智能体 | 论文角色 | LLM？ | 主要职责 |
+|--------|----------|--------|----------|
+| **Miner** | 因子发现 | 是 | 生成因子代码 → IC/IR → 更新 **Z** / **H** |
+| **Screener** | 体制 + 组合 | 是 | **M** → **R̂** → 从 **Z** 得 **E** → 写 **H** |
+| **Trader** | 策略与回测 | 否 | 网格 + 向量化回测 → **π** → 写 **H** |
+
+**Table 1**：`validation` / `backtesting` / `live_trading` 时，**仅在 `training` 日历窗上更新 Z**；当前评估窗只做 Screener+Trader，避免用未来数据扩库（`miner_seed.reason`：`eval_phase_no_Z_writes`）。
+
+编排入口：`alphacrafter/orchestration/loop.py`。
+
+---
+
+## 六、Windows 本机快速试跑（可选）
 
 ```powershell
 cd e:\project\AlphaCrafter
@@ -185,31 +224,18 @@ python -m venv .venv
 pip install -r requirements.txt
 pip install -e .
 copy .env.example .env
-python scripts\run_alphacrafter.py --crypto-data-dir D:\crypto_klines --split training --tickers 10 --crypto-rank-by volume
+python scripts\run_alphacrafter.py --crypto-data-dir D:\demo_klines --split training --tickers 5 --crypto-rank-by none
 ```
 
 ---
 
-## 四、环境变量摘要（`.env`）
+## 七、附录
 
-详见 `.env.example`。常用项：
-
-| 变量名 | 说明 |
-|--------|------|
-| `OPENAI_API_KEY` | DeepSeek 等 OpenAI 兼容接口密钥 |
-| `OPENAI_BASE_URL` | 默认 `https://api.deepseek.com` |
-| `OPENAI_MODEL` | 例如 `deepseek-chat` |
-| `ALPHACRAFTER_LLM_PROVIDER` | `openai` / `anthropic` / `stub` 等 |
-| `ALPHACRAFTER_PAPER_SPLIT` | 可选：`training` / `validation` / `backtesting` / `live_trading` |
-| `ALPHACRAFTER_ORCH_TICKER_LIMIT` | 默认单次编排所用标的数量上限 |
-| `ALPHACRAFTER_CRYPTO_DATA_DIR` | 与 CLI `--crypto-data-dir` 等价，可二选一 |
-| `ALPHACRAFTER_CRYPTO_RANK_BY` | `volume` / `none` |
-| `ALPHACRAFTER_BARS_PER_YEAR` | 年化用 bar 数；不设且为 crypto 时默认 **365** |
-
-勿将 `.env` 提交到 Git。
+- **单元测试**：`python -m unittest discover -s tests -p "test_*.py" -v`  
+- **旧美股 Yahoo + 维基**：仍可用 `scripts/scrape_sp500.py` + `run_alphacrafter.py --universe ...`，非当前文档主线。
 
 ---
 
-## 五、免责声明
+## 免责声明
 
 本仓库用于研究与教育目的。任何回测结果不构成投资建议；实盘交易需自行承担风险并遵守当地法规与交易所规则。

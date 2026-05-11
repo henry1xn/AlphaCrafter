@@ -136,66 +136,126 @@ def extract_python_block(text: str) -> str:
     return text.strip()
 
 
-def complete_text(system: str, user: str, *, max_tokens: int = 1200) -> str:
+def _maybe_log_llm(
+    *,
+    agent: str | None,
+    provider: str,
+    model: str | None,
+    system: str,
+    user: str,
+    response: str,
+    max_tokens: int,
+) -> None:
+    try:
+        from alphacrafter.utils.llm_interaction_log import log_llm_turn
+
+        log_llm_turn(
+            agent=agent or "unknown",
+            provider=provider,
+            model=model,
+            system=system,
+            user=user,
+            response=response,
+            max_tokens=max_tokens,
+        )
+    except Exception:  # noqa: BLE001 — logging must never break inference
+        pass
+
+
+def complete_text(
+    system: str,
+    user: str,
+    *,
+    max_tokens: int = 1200,
+    agent: str | None = None,
+) -> str:
     """
     Return assistant plain text.
+
+    ``agent``: logical multi-agent caller for JSONL logs — e.g. ``miner``, ``screener``.
 
     Backends (via env):
 
     - **anthropic** — ``ANTHROPIC_API_KEY``, ``ANTHROPIC_MODEL``
-    - **openai-compatible** — ``OPENAI_API_KEY``, ``OPENAI_BASE_URL`` (DeepSeek: https://api.deepseek.com), ``OPENAI_MODEL``
+    - **openai-compatible** — ``OPENAI_API_KEY``, ``OPENAI_BASE_URL``, ``OPENAI_MODEL``
     - **minimax** — ``MINIMAX_API_KEY``, ``MINIMAX_MODEL``, optional ``MINIMAX_API_URL``
 
-    Override auto-selection with ``ALPHACRAFTER_LLM_PROVIDER=anthropic|openai|minimax|stub``.
+    Logging: ``ALPHACRAFTER_LLM_LOG`` (default on), path ``ALPHACRAFTER_LLM_LOG_PATH`` or
+    ``<DATA_DIR>/logs/llm_interactions.jsonl``.
     """
     prov = resolve_llm_provider()
+    out: str
+    model_used: str | None = None
+
     if prov == "anthropic":
         key = anthropic_api_key()
         if not key or anthropic is None:
-            return _offline_stub_response(user)
-        client = anthropic.Anthropic(api_key=key)
-        msg = client.messages.create(
-            model=anthropic_model(),
-            max_tokens=max_tokens,
-            system=system,
-            messages=[{"role": "user", "content": user}],
-        )
-        parts: list[str] = []
-        for b in msg.content:
-            if getattr(b, "type", None) == "text":
-                parts.append(b.text)
-        return "".join(parts).strip()
+            out = _offline_stub_response(user)
+            model_used = "stub-offline"
+        else:
+            client = anthropic.Anthropic(api_key=key)
+            msg = client.messages.create(
+                model=anthropic_model(),
+                max_tokens=max_tokens,
+                system=system,
+                messages=[{"role": "user", "content": user}],
+            )
+            parts: list[str] = []
+            for b in msg.content:
+                if getattr(b, "type", None) == "text":
+                    parts.append(b.text)
+            out = "".join(parts).strip()
+            model_used = anthropic_model()
 
-    if prov == "openai":
+    elif prov == "openai":
         key = _openai_api_key()
         if not key:
-            return _offline_stub_response(user)
-        return _chat_completions_openai_format(
-            url=_openai_compatible_url(),
-            api_key=key,
-            model=_openai_model(),
-            system=system,
-            user=user,
-            max_tokens=max_tokens,
-        )
+            out = _offline_stub_response(user)
+            model_used = "stub-offline"
+        else:
+            model_used = _openai_model()
+            out = _chat_completions_openai_format(
+                url=_openai_compatible_url(),
+                api_key=key,
+                model=model_used,
+                system=system,
+                user=user,
+                max_tokens=max_tokens,
+            )
 
-    if prov == "minimax":
+    elif prov == "minimax":
         key = _minimax_api_key()
         if not key:
-            return _offline_stub_response(user)
-        gid = os.getenv("MINIMAX_GROUP_ID", "").strip()
-        extra = {"Group-Id": gid} if gid else None
-        return _chat_completions_openai_format(
-            url=_minimax_url(),
-            api_key=key,
-            model=_minimax_model(),
-            system=system,
-            user=user,
-            max_tokens=max_tokens,
-            extra_headers=extra,
-        )
+            out = _offline_stub_response(user)
+            model_used = "stub-offline"
+        else:
+            model_used = _minimax_model()
+            gid = os.getenv("MINIMAX_GROUP_ID", "").strip()
+            extra = {"Group-Id": gid} if gid else None
+            out = _chat_completions_openai_format(
+                url=_minimax_url(),
+                api_key=key,
+                model=model_used,
+                system=system,
+                user=user,
+                max_tokens=max_tokens,
+                extra_headers=extra,
+            )
 
-    return _offline_stub_response(user)
+    else:
+        out = _offline_stub_response(user)
+        model_used = "stub"
+
+    _maybe_log_llm(
+        agent=agent,
+        provider=prov,
+        model=model_used,
+        system=system,
+        user=user,
+        response=out,
+        max_tokens=max_tokens,
+    )
+    return out
 
 
 def _offline_stub_response(user: str) -> str:

@@ -129,7 +129,7 @@ class ScreenerAgent:
             "Line 1 label, line 2 rationale."
         )
         try:
-            text = complete_text(system, user, max_tokens=200)
+            text = complete_text(system, user, max_tokens=200, agent="screener")
             label, raw = _parse_regime_llm(text, m)
         except Exception:  # noqa: BLE001
             label, raw = _parse_regime_llm("", m)

@@ -22,3 +22,4 @@ build/
 # Generated market data — run scripts/scrape_sp500.py after clone
 data/raw/*.csv
 data/processed/*.csv
+data/logs/

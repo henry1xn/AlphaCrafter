@@ -16,6 +16,7 @@ _data_env = os.getenv("ALPHACRAFTER_DATA_DIR", "").strip()
 DATA_DIR = Path(_data_env) if _data_env else (PROJECT_ROOT / "data")
 RAW_DIR = DATA_DIR / "raw"
 PROCESSED_DIR = DATA_DIR / "processed"
+LOG_DIR = DATA_DIR / "logs"
 
 _db_env = os.getenv("ALPHACRAFTER_DB_PATH", "").strip()
 DB_PATH = Path(_db_env) if _db_env else (DATA_DIR / "shared_memory.db")
@@ -32,5 +33,5 @@ SCREENER_TOP_K = int(os.getenv("ALPHACRAFTER_SCREENER_TOP_K", "10"))
 TRADER_MAX_EXPLORATIONS = int(os.getenv("ALPHACRAFTER_TRADER_MAX_EXPLORATIONS", "8"))
 PANEL_TRADING_DAYS = int(os.getenv("ALPHACRAFTER_PANEL_DAYS", "200"))
 
-for _p in (DATA_DIR, RAW_DIR, PROCESSED_DIR):
+for _p in (DATA_DIR, RAW_DIR, PROCESSED_DIR, LOG_DIR):
     _p.mkdir(parents=True, exist_ok=True)
