@@ -17,7 +17,7 @@
 
 ## 一、服务器上从头到尾怎么跑（按顺序复制）
 
-以下假设：**Linux**、已能 `ssh` 登录、已安装 **conda** 与 **git**；项目在 `~/AlphaCrafter`，数据已在 **`/gpudata/crypto/data/parquet_data/futures/um/monthly/klines`**（只读即可）。
+以下假设：**Linux**、已能 `ssh` 登录、已安装 **conda** 与 **git**；项目在 **`~/projects/AlphaCrafter`**（与下文 `git clone` 路径一致），数据已在 **`/gpudata/crypto/data/parquet_data/futures/um/monthly/klines`**（只读即可）。
 
 ### 1）登录并进入工作目录
 
@@ -85,10 +85,12 @@ python scripts/run_alphacrafter.py \
   --crypto-data-dir /gpudata/crypto/data/parquet_data/futures/um/monthly/klines \
   --split backtesting \
   --tickers 20 \
-  --crypto-rank-by volume
+  --crypto-rank-by volume \
+  --artifacts-dir runs/$(date +%Y%m%d_%H%M)
 ```
 
 - 若已在 `.env` 里设置了 `ALPHACRAFTER_CRYPTO_DATA_DIR`，可省略 `--crypto-data-dir`，只保留 `--split` 等参数。  
+- `--artifacts-dir` 可省略；需要 `equity_curves.png` 时请确保已 `pip install matplotlib`（见 `requirements.txt`）。  
 - 长时间任务建议：`screen` / `tmux` 或 `nohup ... > run.log 2>&1 &`。
 
 ---
@@ -118,7 +120,7 @@ python scripts/run_alphacrafter.py \
 | `.env` 变量 | 作用 |
 |-------------|------|
 | `ALPHACRAFTER_MINER_IC_ACCEPT` | Miner 接受因子 IC 下限（默认 0.03） |
-| `ALPHACRAFTER_MINER_MAX_ITERATIONS` | Miner 每轮最多生成次数 |
+| `ALPHACRAFTER_MINER_MAX_ITERATIONS` | Miner 单次 `run` 内最多「生成→校验→记 H」次数（代码默认 **100**；可用本变量改小以省 API） |
 | `ALPHACRAFTER_TRADER_MAX_EXPLORATIONS` | Trader 网格尝试次数上限 |
 | `ALPHACRAFTER_BARS_PER_YEAR` | 年化用 bar 数；不设且为 crypto 时默认 **365** |
 | `ALPHACRAFTER_DISABLE_BUILTIN_SEED=1` | 禁止在 Z 为空时用内置因子 seed（更难跑通端到端，仅当你要严格只用 LLM 因子时） |
@@ -144,12 +146,15 @@ python scripts/run_alphacrafter.py \
 `python scripts/run_alphacrafter.py ...` 会打印：
 
 - 一大段 **`ok`: true/false** 的 **JSON**。重点字段：  
-  - **`trader.best_metrics`**：`sharpe_ann`、`ann_return_pct`（年化收益 %）、`max_drawdown_pct`、`cum_return`、`n`  
+  - **`benchmark.metrics`**：当前评估窗上的 **等权多头基准**（`sharpe_ann`、`ann_return_pct`、`max_drawdown_pct` 等），**不依赖** Trader 是否成功。  
+  - **`trader.best_metrics`**（若 `trader` 非 `null`）：策略搜索最优的 `sharpe_ann`、`ann_return_pct`、`max_drawdown_pct`、`cum_return`、`n`  
   - **`trader.best_spec`**：本次最优的 clip/gross/net_bias  
+  - **`trader.equity_curve`**（若有）：日频权益曲线，便于落盘或再画图  
+  - **`artifacts`**（若命令行传了 `--artifacts-dir`）：`summary.json`、基准 CSV、可选 `equity_curves.png` 等路径  
   - **`regime`**、**`ensemble_id`**、**`miner`** / **`miner_seed`**：辅助判断因子是否主要来自 LLM 或 seed  
   - **`library_discipline`**：是否 `paper_eval`（eval 段不写 Z）等  
 
-- JSON 之后若未加 `--json-only`，还有几行 **`AR(%)` / `SR` / `MDD(%)`** 摘要（与 `trader.best_metrics` 一致）。
+- JSON 之后若未加 `--json-only`，stderr 上还有 Miner 每步进度（`ALPHACRAFTER_MINER_VERBOSE=0` 可关）；stdout 上会多几行摘要：先 **等权基准** 的 **`AR(%)` / `SR` / `MDD(%)`**，若有 Trader 再打印策略回测的同样三项。
 
 可把整段输出重定向留档：
 
@@ -210,6 +215,13 @@ sqlite3 data/shared_memory.db ".tables"
 | **Trader** | 策略与回测 | 否 | 网格 + 向量化回测 → **π** → 写 **H** |
 
 **Table 1**：`validation` / `backtesting` / `live_trading` 时，**仅在 `training` 日历窗上更新 Z**；当前评估窗只做 Screener+Trader，避免用未来数据扩库（`miner_seed.reason`：`eval_phase_no_Z_writes`）。
+
+- **与论文「训练挖因子」是否一致**：一致。上述 eval 阶段下，**Miner 只在 `training`（2016–2022）面板上循环**（生成因子 → IC/IR → 写入 **H**，达标写入 **Z**）；**不会在 validation/backtesting 窗上改 Z**。  
+- **「测试集 / 回测窗」**：Table 1 里 **`validation`（2023）** 与 **`backtesting`（2024–2025）** 是两个不同评估窗；`--split backtesting` 表示在 **回测窗** 上跑 Screener+Trader（因子仍只来自训练窗 Miner）。不是把「测试集」混进训练去挖因子。  
+- **「每次迭代都能优化」**需区分两层：  
+  1. **Miner**：单次进程里 `ALPHACRAFTER_MINER_MAX_ITERATIONS` 次迭代，**每一步都在训练窗上**尝试新因子并记录；**不是**在回测窗上迭代改库。  
+  2. **Trader**：在**当前 split 对应的面板**（例如 backtesting）上做多次网格试探，相当于在**该窗内**搜索策略参数 **π**（多步「优化」夏普等）；**不**更新因子库 Z。  
+  3. **非 walk-forward**：单次 `run_alphacrafter.py` 不会在日历上逐日滚动；若要「日复一日」闭环，需自行定时多次运行或另写外层调度。
 
 编排入口：`alphacrafter/orchestration/loop.py`。
 

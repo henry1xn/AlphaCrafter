@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
 
 import pandas as pd
@@ -129,6 +130,15 @@ class MinerAgent:
             return bool(int(os.getenv("ALPHACRAFTER_MINER_EARLY_STOP", "0")))
         return False
 
+    @staticmethod
+    def _iter_log_enabled() -> bool:
+        v = os.getenv("ALPHACRAFTER_MINER_VERBOSE", "1").strip().lower()
+        return v not in {"0", "false", "no", "off"}
+
+    def _log(self, msg: str) -> None:
+        if self._iter_log_enabled():
+            print(msg, file=sys.stderr)
+
     def run(self, panel: pd.DataFrame, tickers: list[str]) -> MinerRunSummary:
         if panel.empty:
             raise ValueError("Miner received empty panel")
@@ -139,28 +149,54 @@ class MinerAgent:
         rejected = 0
         deprecated = 0
 
+        self._log(
+            f"[Miner] start optimize loop: max_iterations={self.max_iterations} "
+            f"ic_accept={self.ic_accept:g} ic_retain={self.ic_retain:g} "
+            f"library_cap={self.max_library_factors}"
+        )
+
         while not self._termination(iterations, accepted):
             iterations += 1
+            self._log(f"[Miner] --- iteration {iterations}/{self.max_iterations}: generate ---")
             try:
                 code = self.generate_code(tickers)
             except Exception as exc:  # noqa: BLE001
                 self.memory.record_factor_event(f"# generate failed\n{exc}", None, None, "ineffective")
                 rejected += 1
+                self._log(f"[Miner] iteration {iterations}/{self.max_iterations}: generate failed → {exc!r}")
                 continue
 
+            self._log(f"[Miner] iteration {iterations}/{self.max_iterations}: validate (IC/IR gate)")
             ic, ir, err = self.validate(code, panel)
             if err is not None:
                 self.memory.record_factor_event(code, ic, ir, "ineffective")
                 rejected += 1
+                self._log(
+                    f"[Miner] iteration {iterations}/{self.max_iterations}: "
+                    f"reject (exec/ic) err={err!s} ic={ic} ir={ir} → recorded ineffective"
+                )
                 continue
 
             assert ic is not None and ir is not None
             if ic > self.ic_accept:
                 self.memory.record_factor_event(code, ic, ir, "effective", in_library=True)
                 accepted += 1
+                self._log(
+                    f"[Miner] iteration {iterations}/{self.max_iterations}: "
+                    f"accept ic={ic:g} ir={ir:g} (>{self.ic_accept:g}) → library Z"
+                )
             else:
                 self.memory.record_factor_event(code, ic, ir, "ineffective")
                 rejected += 1
+                self._log(
+                    f"[Miner] iteration {iterations}/{self.max_iterations}: "
+                    f"reject ic={ic:g} ir={ir:g} (need >{self.ic_accept:g}) → recorded ineffective"
+                )
+
+        self._log(
+            f"[Miner] loop done: iterations={iterations} accepted={accepted} "
+            f"rejected={rejected}; running library maintenance"
+        )
 
         # Maintenance — revalidate current library (snapshot by hash)
         library_rows = self.memory.list_library_factors()
@@ -182,6 +218,12 @@ class MinerAgent:
                     in_library=False,
                 )
                 deprecated += 1
+                self._log(f"[Miner] maintenance: deprecated factor hash={h[:12]}... ic={ic2} err={err2!s}")
+
+        self._log(
+            f"[Miner] summary: iterations={iterations} accepted={accepted} "
+            f"rejected={rejected} deprecated={deprecated}"
+        )
 
         return MinerRunSummary(
             iterations=iterations,
