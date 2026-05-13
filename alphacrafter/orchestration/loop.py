@@ -28,6 +28,7 @@ from alphacrafter.data.splits import (
 )
 from alphacrafter.data.universe import load_crypto_universe, load_universe_csv
 from alphacrafter.memory.shared_memory import SharedMemory, init_database
+from alphacrafter.orchestration.panel_hints import training_panel_diagnostics
 
 
 def _maybe_seed_default_factors(sm: SharedMemory, miner: MinerAgent, panel: pd.DataFrame) -> dict[str, Any]:
@@ -39,7 +40,7 @@ def _maybe_seed_default_factors(sm: SharedMemory, miner: MinerAgent, panel: pd.D
         return {"seeded": False, "reason": "disabled"}
     if sm.list_library_factors():
         return {"seeded": False, "reason": "library_nonempty"}
-    ratio = float(os.getenv("ALPHACRAFTER_MINER_SEED_IC_RATIO", "0.45"))
+    ratio = float(os.getenv("ALPHACRAFTER_MINER_SEED_IC_RATIO", "0.38"))
     thr = max(0.005, float(miner.ic_accept) * ratio)
     last: dict[str, Any] = {}
     for i, code in enumerate(BUILTIN_FACTOR_CODES):
@@ -139,6 +140,7 @@ def run_pipeline(
         seed_meta: dict[str, Any]
         train_seed_meta: dict[str, Any] | None = None
         library_discipline: dict[str, Any] | None = None
+        train_panel_diag: dict[str, Any] | None = None
 
         downloaded = panel is None or panel.empty
 
@@ -162,6 +164,8 @@ def run_pipeline(
                 )
                 if train_panel.empty:
                     return {"ok": False, "error": "empty_training_panel", "tickers": tickers_list}
+
+                train_panel_diag = training_panel_diagnostics(train_panel)
 
                 library_discipline = {
                     "mode": "paper_eval",
@@ -196,6 +200,7 @@ def run_pipeline(
                 )
                 if panel.empty:
                     return {"ok": False, "error": "empty_panel", "tickers": tickers_list}
+                train_panel_diag = training_panel_diagnostics(panel)
                 library_discipline = {
                     "mode": "paper_training",
                     "z_updates_on": "training",
@@ -264,6 +269,8 @@ def run_pipeline(
                 "n_days": int(bench_metrics.get("n", 0.0) or 0),
             },
         }
+        if train_panel_diag is not None:
+            out["training_panel_diagnostics"] = train_panel_diag
         if trade is not None:
             out["trader"] = {
                 "best_score": trade.best_score,

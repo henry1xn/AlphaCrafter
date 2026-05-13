@@ -119,9 +119,11 @@ python scripts/run_alphacrafter.py \
 
 | `.env` 变量 | 作用 |
 |-------------|------|
-| `ALPHACRAFTER_MINER_IC_ACCEPT` | Miner 接受因子 IC 下限（默认 0.03） |
-| `ALPHACRAFTER_MINER_MAX_ITERATIONS` | Miner 单次 `run` 内最多「生成→校验→记 H」次数（代码默认 **100**；可用本变量改小以省 API） |
-| `ALPHACRAFTER_TRADER_MAX_EXPLORATIONS` | Trader 网格尝试次数上限 |
+| `ALPHACRAFTER_MINER_IC_ACCEPT` | Miner 接受因子 IC 下限（代码默认 **0.02**，可用 `.env` 收紧） |
+| `ALPHACRAFTER_MINER_IC_RETAIN` | 维护库时低于则下架（默认 **0.008**） |
+| `ALPHACRAFTER_MINER_MAX_ITERATIONS` | Miner 单次 `run` 内最多「生成→校验→记 H」次数（代码默认 **100**） |
+| `ALPHACRAFTER_MINER_SEED_IC_RATIO` | 内置 seed 阈值 = `IC_ACCEPT × ratio`（代码默认 **0.38**） |
+| `ALPHACRAFTER_TRADER_MAX_EXPLORATIONS` | Trader 网格尝试上限（代码默认 **12**） |
 | `ALPHACRAFTER_BARS_PER_YEAR` | 年化用 bar 数；不设且为 crypto 时默认 **365** |
 | `ALPHACRAFTER_DISABLE_BUILTIN_SEED=1` | 禁止在 Z 为空时用内置因子 seed（更难跑通端到端，仅当你要严格只用 LLM 因子时） |
 
@@ -144,6 +146,8 @@ python scripts/run_alphacrafter.py \
 ### 1）终端里的回测结果（主结论）
 
 `python scripts/run_alphacrafter.py ...` 会打印：
+
+- **`training_panel_diagnostics`**（`training` 或 eval 段）：训练窗（或 Table 1 训练窗上的面板）**日历覆盖**与 `warnings` 提示（如历史太短、起始日晚于 2016 等），便于发现「IC 挖不动」是否与数据跨度有关。  
 
 - 一大段 **`ok`: true/false** 的 **JSON**。重点字段：  
   - **`benchmark.metrics`**：当前评估窗上的 **等权多头基准**（`sharpe_ann`、`ann_return_pct`、`max_drawdown_pct` 等），**不依赖** Trader 是否成功。  
@@ -194,6 +198,69 @@ sqlite3 data/shared_memory.db ".tables"
 - **目录是否扫到文件**：确认 `ALPHACRAFTER_CRYPTO_SCAN_SUBDIRS=1`，且路径下确有 `.parquet`/`.csv`。  
 - **列名**：需含时间列 + OHLC（volume 可缺省为 0）。  
 
+### 5）诊断图：Miner 迭代 IC、Trader 试探夏普、因子样本内外 IC、组合夏普
+
+脚本 **`scripts/plot_diagnostics.py`** 从 **`shared_memory.db`** 读最近一次管线写入的记录，生成 PNG（需 **matplotlib**）。
+
+| 输出文件 | 含义 |
+|----------|------|
+| `miner_ic_by_attempt.png` | 最近 `--tail` 条因子尝试：**横轴 = 时间顺序上的第几次尝试**，纵轴 = IC；橙色虚线 = **历史最佳 IC 随尝试累积上升**（体现「随迭代变好」的上界轨迹）。 |
+| `miner_ic_vs_ir_scatter.png` | 同上批次：**IC vs IR 散点**，颜色 = `effective` / `ineffective` / `deprecated`。 |
+| `trader_sharpe_by_trial.png` | 当前最新 **ensemble** 下各次 **Trader 探索**：横轴 = 试探序号，纵轴 = 该次在**评估窗**上的年化夏普；橙色 = **best-so-far**（策略参数搜索过程）。 |
+| `factor_ic_train_vs_<oos>.png` | 需 `--crypto-data-dir`：因子库 **Z** 中每个因子在 **training** 与 **validation/backtesting** 窗上**重新算 IC** 的散点（样本内 vs 样本外 IC）。 |
+| `portfolio_sharpe_train_vs_<oos>.png` | 需 `--crypto-data-dir` 且库内有 ensemble + 候选：用 DB 里**得分最高的 spec**，在同一 ensemble 信号下算 **训练窗 vs OOS 窗** 各一个夏普点（单点对照图）。 |
+
+**注意**：`--tail` 只取 `factor_records` **按 id 倒序的最后 N 条**；若多次跑管线共用同一库，图里会混入历史尝试——做对比实验可为每次运行设独立 `ALPHACRAFTER_DB_PATH`。
+
+在服务器上（先跑完至少一次 `run_alphacrafter.py` 再画图），**逐行**执行：
+
+```bash
+cd ~/projects/AlphaCrafter
+```
+
+```bash
+conda activate alphacrafter
+```
+
+```bash
+python scripts/plot_diagnostics.py \
+  --out-dir runs/diagnostics_plots \
+  --tail 200
+```
+
+```bash
+python scripts/plot_diagnostics.py \
+  --db data/shared_memory.db \
+  --out-dir runs/diagnostics_plots_full \
+  --tail 500 \
+  --crypto-data-dir /gpudata/crypto/data/parquet_data/futures/um/monthly/klines \
+  --tickers 20 \
+  --crypto-rank-by volume \
+  --oos-split backtesting
+```
+
+```bash
+ls -la runs/diagnostics_plots_full
+```
+
+```bash
+# 若 SSH 客户端支持 SFTP，在本机拉取图片；或把目录打成压缩包
+cd ~/projects/AlphaCrafter && tar czvf runs/diag_png.tgz runs/diagnostics_plots_full/*.png
+```
+
+（OOS 用 **validation（2023）** 时把上一段里的 `--oos-split backtesting` 改成 `--oos-split validation` 即可。）
+
+### 6）论文式两阶段 + 诊断图（推荐）
+
+在同一 `shared_memory.db` 上先 **训练窗填满 Z**，再 **回测窗评估**（避免只在 `backtesting` 单跑、eval 纪律下 seed 不写库导致 Z 长期为空）：
+
+```bash
+cd ~/projects/AlphaCrafter && conda activate alphacrafter
+bash scripts/run_crypto_paper_workflow.sh /gpudata/crypto/data/parquet_data/futures/um/monthly/klines 20
+```
+
+第三个参数可指定产物根目录，例如：`bash scripts/run_crypto_paper_workflow.sh "$CRYPTO_DIR" 20 runs/my_exp_1`
+
 ---
 
 ## 四、数据目录约定（与你的 `.../monthly/klines`）
@@ -241,9 +308,56 @@ python scripts\run_alphacrafter.py --crypto-data-dir D:\demo_klines --split trai
 
 ---
 
-## 七、附录
+## 七、推送到 GitHub（逐行命令）
+
+在**本机**或服务器上、已在项目根目录初始化过 git 的前提下（`git status` 无报错）：
+
+```bash
+cd ~/projects/AlphaCrafter
+```
+
+```bash
+git status
+```
+
+```bash
+git add -A
+```
+
+```bash
+git diff --cached --stat
+```
+
+```bash
+git commit -m "feat: miner/trader defaults, training panel hints, crypto workflow script"
+```
+
+若远程尚未配置（只需做一次）：
+
+```bash
+git remote add origin https://github.com/<你的用户名>/<仓库名>.git
+```
+
+若已存在 `origin` 且 URL 正确，可跳过上一行。推送主分支：
+
+```bash
+git branch -M main
+```
+
+```bash
+git push -u origin main
+```
+
+若仓库默认分支是 `master`，把上面两行里的 `main` 改成 `master`。  
+首次推送若开启 2FA，需用 **Personal Access Token** 代替密码，或在服务器上配置 **SSH**：`git remote set-url origin git@github.com:<用户>/<仓库>.git` 后再 `git push`.
+
+---
+
+## 八、附录
 
 - **单元测试**：`python -m unittest discover -s tests -p "test_*.py" -v`  
+- **诊断图脚本自检**：`python -m unittest tests.test_plot_diagnostics -v`  
+- **panel 提示**：`python -m unittest tests.test_panel_hints -v`  
 - **旧美股 Yahoo + 维基**：仍可用 `scripts/scrape_sp500.py` + `run_alphacrafter.py --universe ...`，非当前文档主线。
 
 ---
