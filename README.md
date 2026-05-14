@@ -124,6 +124,7 @@ python scripts/run_alphacrafter.py \
 | `ALPHACRAFTER_MINER_MAX_ITERATIONS` | Miner 单次 `run` 内最多「生成→校验→记 H」次数（代码默认 **100**） |
 | `ALPHACRAFTER_MINER_SEED_IC_RATIO` | 内置 seed 阈值 = `IC_ACCEPT × ratio`（代码默认 **0.38**） |
 | `ALPHACRAFTER_TRADER_MAX_EXPLORATIONS` | Trader 网格尝试上限（代码默认 **12**） |
+| `ALPHACRAFTER_MINER_IC_OOS_MIN` | 训练 IC 过线后，还需 **validation（2023）** 窗 IC ≥ 该值才写入 Z；默认 **0.0**（主要拒绝 OOS 执行失败 / NaN） |
 | `ALPHACRAFTER_BARS_PER_YEAR` | 年化用 bar 数；不设且为 crypto 时默认 **365** |
 | `ALPHACRAFTER_DISABLE_BUILTIN_SEED=1` | 禁止在 Z 为空时用内置因子 seed（更难跑通端到端，仅当你要严格只用 LLM 因子时） |
 
@@ -138,6 +139,10 @@ python scripts/run_alphacrafter.py \
 | `ALPHACRAFTER_LLM_LOG_PREVIEW_CHARS` | 每条 JSON 里 system/user/response 预览最大字符数 |
 
 完整列表仍以 **`.env.example`** 为准。
+
+**若 Miner 仍显示 `max_iterations=4` 或 `ic_accept=0.03`**：检查项目根目录 **`.env`** 是否仍写着旧值（`dotenv` 会覆盖代码默认）；删除或改为与 `.env.example` 一致后重跑。stderr 第一行会打印 `env ALPHACRAFTER_MINER_MAX_ITERATIONS=...` 便于核对。
+
+**样本外 IC**：在 `--split validation|backtesting|live_trading` 且走 Table 1 下载面板时，Miner 只在 **training** 上算主 IC；**入库前**再在 **validation（2023）** 窗上算一次 IC，未过 `ALPHACRAFTER_MINER_IC_OOS_MIN` 则记为 `ineffective_oos`、**不进入 Z**（见 JSON `library_discipline.miner_oos_*`）。
 
 ---
 

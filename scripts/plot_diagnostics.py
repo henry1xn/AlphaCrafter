@@ -151,6 +151,7 @@ def plot_miner_ic_ir_scatter(df: pd.DataFrame, out_path: Path) -> None:
     fig, ax = plt.subplots(figsize=(6, 6))
     for label, color in (
         ("effective", "tab:green"),
+        ("ineffective_oos", "tab:purple"),
         ("ineffective", "tab:gray"),
         ("deprecated", "tab:red"),
     ):

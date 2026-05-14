@@ -114,9 +114,13 @@ class MinerAgent:
         user = (
             f"Universe sample tickers: {sample}\n"
             f"Recent shared-memory factor attempts:\n{history}\n"
-            "Write ONE new factor. Output only a ```python fenced block."
+            "Write ONE new factor. Output only a ```python fenced block.\n"
+            "Important: the final ```python ... ``` fence must appear in the normal assistant "
+            "message body (not only inside hidden reasoning), so the client can parse it."
         )
-        max_toks = int(os.getenv("ALPHACRAFTER_MINER_MAX_TOKENS", "1400") or "1400")
+        # Reasoning-style APIs may consume max_tokens in CoT; larger default reduces empty ``content``.
+        default_toks = "3200" if self.asset_class == "crypto" else "2400"
+        max_toks = int(os.getenv("ALPHACRAFTER_MINER_MAX_TOKENS", default_toks) or default_toks)
         raw = complete_text(system, user, max_tokens=max_toks, agent="miner")
         return extract_python_block(raw)
 
@@ -139,19 +143,35 @@ class MinerAgent:
         if self._iter_log_enabled():
             print(msg, file=sys.stderr)
 
-    def run(self, panel: pd.DataFrame, tickers: list[str]) -> MinerRunSummary:
+    def run(
+        self,
+        panel: pd.DataFrame,
+        tickers: list[str],
+        *,
+        oos_panel: pd.DataFrame | None = None,
+    ) -> MinerRunSummary:
         if panel.empty:
             raise ValueError("Miner received empty panel")
         # Local working copy; callers should run ``add_forward_return`` on their panel for downstream agents.
         panel = add_forward_return(panel)
+        oos_df: pd.DataFrame | None = None
+        if oos_panel is not None and not oos_panel.empty:
+            oos_df = add_forward_return(oos_panel.copy())
+        oos_min = float(os.getenv("ALPHACRAFTER_MINER_IC_OOS_MIN", "0.0"))
+        oos_enabled = oos_df is not None
         iterations = 0
         accepted = 0
         rejected = 0
         deprecated = 0
 
+        env_mi = os.getenv("ALPHACRAFTER_MINER_MAX_ITERATIONS", "").strip()
+        env_ia = os.getenv("ALPHACRAFTER_MINER_IC_ACCEPT", "").strip()
         self._log(
             f"[Miner] start optimize loop: max_iterations={self.max_iterations} "
-            f"ic_accept={self.ic_accept:g} ic_retain={self.ic_retain:g} "
+            f"(env ALPHACRAFTER_MINER_MAX_ITERATIONS={env_mi or '<unset, using package default>'}) "
+            f"ic_accept={self.ic_accept:g} "
+            f"(env ALPHACRAFTER_MINER_IC_ACCEPT={env_ia or '<unset, using package default>'}) "
+            f"ic_retain={self.ic_retain:g} "
             f"library_cap={self.max_library_factors}"
         )
 
@@ -179,6 +199,25 @@ class MinerAgent:
 
             assert ic is not None and ir is not None
             if ic > self.ic_accept:
+                if oos_enabled:
+                    ic_oos, ir_oos, err_oos = self.validate(code, oos_df)  # type: ignore[arg-type]
+                    if err_oos is not None or ic_oos is None or float(ic_oos) < oos_min:
+                        tagged = (
+                            f"# train_ic={ic:g} train_ir={ir:g} oos_ic={ic_oos} oos_ir={ir_oos} "
+                            f"oos_err={err_oos!s} oos_min={oos_min:g}\n{code}"
+                        )
+                        self.memory.record_factor_event(tagged, ic_oos, ir_oos, "ineffective_oos")
+                        rejected += 1
+                        self._log(
+                            f"[Miner] iteration {iterations}/{self.max_iterations}: "
+                            f"reject OOS validation-window IC ic_oos={ic_oos} (need >= {oos_min:g}) "
+                            f"train_ic={ic:g} → recorded ineffective_oos"
+                        )
+                        continue
+                    self._log(
+                        f"[Miner] iteration {iterations}/{self.max_iterations}: "
+                        f"OOS gate ok ic_oos={ic_oos:g} (>= {oos_min:g}) train_ic={ic:g}"
+                    )
                 self.memory.record_factor_event(code, ic, ir, "effective", in_library=True)
                 accepted += 1
                 self._log(

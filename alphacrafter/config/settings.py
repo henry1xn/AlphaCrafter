@@ -25,6 +25,7 @@ HTTP_SLEEP_SEC = float(os.getenv("ALPHACRAFTER_HTTP_SLEEP", "0.35"))
 
 # --- Orchestration / agents ---
 ORCH_TICKER_LIMIT = int(os.getenv("ALPHACRAFTER_ORCH_TICKER_LIMIT", "20"))
+# If your run still shows max_iterations=4, check project ``.env`` for ALPHACRAFTER_MINER_MAX_ITERATIONS=4 (overrides this).
 MINER_MAX_ITERATIONS = int(os.getenv("ALPHACRAFTER_MINER_MAX_ITERATIONS", "100"))
 # Slightly more permissive defaults help crypto / short-history panels reach non-empty Z (override via .env).
 MINER_IC_ACCEPT = float(os.getenv("ALPHACRAFTER_MINER_IC_ACCEPT", "0.02"))

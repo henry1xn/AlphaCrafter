@@ -112,13 +112,31 @@ def _chat_completions_openai_format(
     if not choices:
         raise RuntimeError(f"LLM response missing choices: {str(data)[:800]}")
     msg = choices[0].get("message") or {}
+    text = _openai_assistant_text(msg)
+    if not text:
+        raise RuntimeError(f"LLM empty content: {str(data)[:800]}")
+    return text
+
+
+def _openai_assistant_text(msg: dict[str, Any]) -> str:
+    """
+    Normalize ``choices[0].message`` to a single string.
+
+    Some OpenAI-compatible providers (e.g. DeepSeek reasoning models) return an empty
+    ``content`` but put chain-of-thought + code in ``reasoning_content``; we fall back
+    so Miner can still ``extract_python_block``.
+    """
     content = msg.get("content")
     if isinstance(content, list):  # multimodal
         parts = [p.get("text", "") for p in content if isinstance(p, dict)]
         content = "".join(parts)
-    if not isinstance(content, str) or not content.strip():
-        raise RuntimeError(f"LLM empty content: {str(data)[:800]}")
-    return content.strip()
+    if isinstance(content, str) and content.strip():
+        return content.strip()
+    for key in ("reasoning_content", "reasoning", "reasoning_details"):
+        alt = msg.get(key)
+        if isinstance(alt, str) and alt.strip():
+            return alt.strip()
+    return ""
 
 
 def _openai_compatible_url() -> str:

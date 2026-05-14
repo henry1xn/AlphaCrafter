@@ -167,14 +167,23 @@ def run_pipeline(
 
                 train_panel_diag = training_panel_diagnostics(train_panel)
 
+                oos_panel = _load_panel_for_split(
+                    tickers_list, "validation", trading_days=days, sleep_sec=sleep, crypto_data_dir=crypto_root
+                )
+                if oos_panel.empty:
+                    oos_panel = None
+
                 library_discipline = {
                     "mode": "paper_eval",
                     "z_updates_only_on": "training",
                     "eval_phase": split_name,
                     "data_source": "crypto_local" if crypto_root else "yahoo",
+                    "miner_train_split": "training",
+                    "miner_oos_ic_split": "validation" if oos_panel is not None else None,
+                    "miner_oos_ic_min": float(os.getenv("ALPHACRAFTER_MINER_IC_OOS_MIN", "0.0")),
                 }
                 if run_miner:
-                    miner_summary = miner.run(train_panel, tickers_list)
+                    miner_summary = miner.run(train_panel, tickers_list, oos_panel=oos_panel)
                     train_fwd = add_forward_return(train_panel.copy())
                     train_seed_meta = _maybe_seed_default_factors(sm, miner, train_fwd)
                 else:
