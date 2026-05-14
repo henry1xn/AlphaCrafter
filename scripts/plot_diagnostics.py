@@ -142,6 +142,32 @@ def plot_miner_ic_series(df: pd.DataFrame, out_path: Path) -> None:
     plt.close(fig)
 
 
+def plot_miner_ic_ir_timeseries(df: pd.DataFrame, out_path: Path) -> None:
+    """IC and IR vs Miner attempt index (same tail as miner_ic_by_attempt)."""
+    if df.empty:
+        return
+    x = np.arange(1, len(df) + 1)
+    ic = pd.to_numeric(df["ic"], errors="coerce")
+    ir = pd.to_numeric(df["ir"], errors="coerce")
+    fig, (ax0, ax1) = plt.subplots(2, 1, figsize=(9, 7), sharex=True)
+    ax0.plot(x, ic, "o-", markersize=3, linewidth=1, label="IC per attempt")
+    ax0.plot(x, ic.cummax(), "--", color="tab:orange", linewidth=1.5, label="cumulative max IC")
+    ax0.axhline(0.0, color="gray", linestyle=":", linewidth=0.8)
+    ax0.set_ylabel("IC")
+    ax0.set_title("Miner: IC by attempt (recent tail)")
+    ax0.legend(loc="best", fontsize=8)
+    ax1.plot(x, ir, "o-", markersize=3, linewidth=1, color="tab:green", label="IR per attempt")
+    ax1.plot(x, ir.cummax(), "--", color="tab:red", linewidth=1.5, label="cumulative max IR")
+    ax1.axhline(0.0, color="gray", linestyle=":", linewidth=0.8)
+    ax1.set_xlabel("Miner attempt index (chronological in tail window)")
+    ax1.set_ylabel("IR")
+    ax1.set_title("Miner: IR by attempt (recent tail)")
+    ax1.legend(loc="best", fontsize=8)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=120)
+    plt.close(fig)
+
+
 def plot_miner_ic_ir_scatter(df: pd.DataFrame, out_path: Path) -> None:
     if df.empty:
         return
@@ -242,6 +268,61 @@ def plot_factor_ic_train_oos(
     plt.close(fig)
 
 
+def plot_factor_ir_train_oos(
+    *,
+    sm: SharedMemory,
+    miner: MinerAgent,
+    tickers: list[str],
+    crypto_dir: Path,
+    oos_split: SplitName,
+    trading_days: int,
+    out_path: Path,
+) -> None:
+    rows = sm.list_library_factors()
+    if not rows:
+        return
+    t0, t1 = paper_split_range("training")
+    v0, v1 = paper_split_range(oos_split)
+    train = add_forward_return(
+        build_long_panel_crypto(tickers, crypto_dir, start=t0, end=t1, trading_days=trading_days)
+    )
+    oos = add_forward_return(
+        build_long_panel_crypto(tickers, crypto_dir, start=v0, end=v1, trading_days=trading_days)
+    )
+    if train.empty or oos.empty:
+        return
+
+    xs: list[float] = []
+    ys: list[float] = []
+    for r in rows:
+        code = str(r["code"])
+        _, ir_tr, etr = miner.validate(code, train)
+        _, ir_oos, eo = miner.validate(code, oos)
+        if etr is not None or ir_tr != ir_tr or eo is not None or ir_oos != ir_oos:
+            continue
+        xs.append(float(ir_tr))
+        ys.append(float(ir_oos))
+
+    if len(xs) < 1:
+        return
+
+    fig, ax = plt.subplots(figsize=(6, 6))
+    ax.scatter(np.array(xs), np.array(ys), s=36, alpha=0.8, edgecolors="k", linewidths=0.3)
+    lim = (-1.5, 1.5)
+    ax.plot(lim, lim, "k--", linewidth=0.8, label="y=x")
+    ax.axhline(0, color="gray", linewidth=0.4)
+    ax.axvline(0, color="gray", linewidth=0.4)
+    ax.set_xlim(lim)
+    ax.set_ylim(lim)
+    ax.set_xlabel("IR in-sample (training window)")
+    ax.set_ylabel(f"IR out-of-sample ({oos_split})")
+    ax.set_title("Factor library: train IR vs OOS IR")
+    ax.legend(loc="best")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=120)
+    plt.close(fig)
+
+
 def plot_portfolio_sharpe_train_oos(
     *,
     sm: SharedMemory,
@@ -319,6 +400,11 @@ def main(argv: list[str] | None = None) -> int:
         choices=["validation", "backtesting"],
         help="OOS calendar for factor IC scatter and portfolio Sharpe OOS axis",
     )
+    p.add_argument(
+        "--skip-portfolio-sharpe-plot",
+        action="store_true",
+        help="Do not plot portfolio train vs OOS Sharpe (factor-only workflows often have no ensemble/spec).",
+    )
     p.add_argument("--trading-days", type=int, default=PANEL_TRADING_DAYS, help="Panel load safety span (see build_long_panel_crypto)")
     args = p.parse_args(argv)
 
@@ -340,6 +426,10 @@ def main(argv: list[str] | None = None) -> int:
         p1 = out_dir / "miner_ic_by_attempt.png"
         plot_miner_ic_series(fac, p1)
         written.append(str(p1))
+        p1b = out_dir / "miner_ic_ir_by_attempt.png"
+        plot_miner_ic_ir_timeseries(fac, p1b)
+        if p1b.is_file():
+            written.append(str(p1b))
         p2 = out_dir / "miner_ic_vs_ir_scatter.png"
         plot_miner_ic_ir_scatter(fac, p2)
         written.append(str(p2))
@@ -382,12 +472,30 @@ def main(argv: list[str] | None = None) -> int:
                     if p4.is_file():
                         written.append(str(p4))
 
+                    p4b = out_dir / f"factor_ir_train_vs_{args.oos_split}.png"
+                    plot_factor_ir_train_oos(
+                        sm=sm,
+                        miner=miner,
+                        tickers=tickers_list,
+                        crypto_dir=crypto_dir,
+                        oos_split=oos_split,
+                        trading_days=int(args.trading_days),
+                        out_path=p4b,
+                    )
+                    if p4b.is_file():
+                        written.append(str(p4b))
+
                     cx = sqlite3.connect(str(db_path))
                     try:
                         spec = _load_best_spec_for_ensemble(cx, eid) if eid is not None else None
                     finally:
                         cx.close()
-                    if eid is not None and members and spec:
+                    if (
+                        not args.skip_portfolio_sharpe_plot
+                        and eid is not None
+                        and members
+                        and spec
+                    ):
                         p5 = out_dir / f"portfolio_sharpe_train_vs_{args.oos_split}.png"
                         plot_portfolio_sharpe_train_oos(
                             sm=sm,

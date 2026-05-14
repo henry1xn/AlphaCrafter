@@ -72,6 +72,11 @@ def main(argv: list[str] | None = None) -> int:
             "and equity_curves.png (needs matplotlib)."
         ),
     )
+    p.add_argument(
+        "--miner-only",
+        action="store_true",
+        help="Run Miner (and optional seed) only — no Screener/Trader; for factor IC/IR experiments.",
+    )
     args = p.parse_args(argv)
 
     crypto_dir = args.crypto_data_dir
@@ -89,6 +94,7 @@ def main(argv: list[str] | None = None) -> int:
         panel_sleep=args.sleep_panel,
         dataset_split=args.split,
         artifacts_dir=args.artifacts_dir,
+        miner_only=bool(args.miner_only),
     )
     print(json.dumps(summary, indent=2, default=str))
     art = summary.get("artifacts")

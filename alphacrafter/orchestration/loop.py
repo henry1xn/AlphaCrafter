@@ -96,6 +96,7 @@ def run_pipeline(
     run_miner: bool = True,
     dataset_split: str | None = None,
     artifacts_dir: str | Path | None = None,
+    miner_only: bool = False,
 ) -> dict[str, Any]:
     """
     One full pass over agents.
@@ -106,6 +107,9 @@ def run_pipeline(
     **Paper split discipline:** on ``validation`` / ``backtesting`` / ``live_trading`` with
     downloaded panels, Miner runs only on **training** to populate Z; eval window is read-only
     for Z (including builtin seed).
+
+    **miner_only:** run Miner (and optional seed) then stop — no Screener/Trader; for factor IC/IR
+    experiments without strategy backtest.
     """
     close_owned = memory is None
     if close_owned:
@@ -249,11 +253,16 @@ def run_pipeline(
             panel = add_forward_return(panel)
             seed_meta = _maybe_seed_default_factors(sm, miner, panel)
 
-        screener = ScreenerAgent(sm)
-        ensemble, scr_meta = screener.run(panel)
+        if miner_only:
+            ensemble = None
+            scr_meta = {"skipped": True, "reason": "miner_only"}
+            trade = None
+        else:
+            screener = ScreenerAgent(sm)
+            ensemble, scr_meta = screener.run(panel)
 
-        trader = TraderAgent(sm)
-        trade = trader.run(panel, ensemble)
+            trader = TraderAgent(sm)
+            trade = trader.run(panel, ensemble)
 
         ret_w = pivot_close_returns(panel)
         bench_r = ret_w.mean(axis=1).dropna() if not ret_w.empty else pd.Series(dtype=float)
@@ -267,10 +276,11 @@ def run_pipeline(
             "dataset_split_meta": split_metadata(split_name) if split_name else None,
             "panel_observed_trading_days": panel_observed_td,
             "library_discipline": library_discipline,
+            "miner_only": bool(miner_only),
             "miner": asdict(miner_summary) if miner_summary is not None else None,
             "miner_seed": seed_meta,
             "screener": scr_meta,
-            "ensemble_id": getattr(ensemble, "ensemble_id", None),
+            "ensemble_id": getattr(ensemble, "ensemble_id", None) if ensemble else None,
             "regime": getattr(ensemble, "regime_label", None) if ensemble else None,
             "benchmark": {
                 "label": "equal_weight_long_only_close_to_close",
@@ -280,7 +290,9 @@ def run_pipeline(
         }
         if train_panel_diag is not None:
             out["training_panel_diagnostics"] = train_panel_diag
-        if trade is not None:
+        if miner_only:
+            out["trader"] = None
+        elif trade is not None:
             out["trader"] = {
                 "best_score": trade.best_score,
                 "best_metrics": trade.best_metrics,

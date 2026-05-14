@@ -266,6 +266,36 @@ bash scripts/run_crypto_paper_workflow.sh /gpudata/crypto/data/parquet_data/futu
 
 第三个参数可指定产物根目录，例如：`bash scripts/run_crypto_paper_workflow.sh "$CRYPTO_DIR" 20 runs/my_exp_1`
 
+### 6.1）仅因子实验：训练窗挖因子 → 样本外 IC/IR（不做策略验证）
+
+一键脚本 **`scripts/run_crypto_train_validate_workflow.sh`** 会：
+
+1. 在 **training** 窗只跑 **Miner**（`--miner-only`，不写 Screener/Trader），并把 SQLite 放在产物目录下的 `experiment.sqlite`；  
+2. 用 **`validate_experiment.py`** 在 **training vs validation** 上复算每个因子的 **IC / IR**，默认**不含**截面多空 Sharpe、**不含**等权基准（纯因子层）；并写出 `factor_ic_ir_report.json`、`.csv`、`.md` 与 **`factor_library_snapshot.json`**（因子库快照，含完整代码）；  
+3. 用 **`plot_diagnostics.py`** 生成 **IC 随迭代变化**、**IC+IR 双子图**、**IC–IR 散点**、**训练 vs 验证窗的 IC / IR 散点**等图（加 `--skip-portfolio-sharpe-plot` 跳过组合策略夏普图）。
+
+```bash
+cd ~/projects/AlphaCrafter && conda activate alphacrafter
+bash scripts/run_crypto_train_validate_workflow.sh /gpudata/crypto/data/parquet_data/futures/um/monthly/klines 20
+```
+
+仅复算当前库 **Z**（不跑 Miner），与已有库共用 `ALPHACRAFTER_DB_PATH` 时：
+
+```bash
+python scripts/validate_experiment.py \
+  --crypto-data-dir /gpudata/crypto/data/parquet_data/futures/um/monthly/klines \
+  --tickers 20 \
+  --train-split training \
+  --oos-split validation \
+  --json-out runs/factor_ic_ir_report.json \
+  --csv-out runs/factor_ic_ir_table.csv \
+  --markdown-out runs/factor_ic_ir_report.md \
+  --library-json-out runs/factor_library_snapshot.json
+```
+
+- 需要**单因子多空 Sharpe**时加 `--with-ls-sharpe`；需要**等权基准**时加 `--with-benchmark`。  
+- `--oos-split backtesting` 可做「训练 vs 回测窗」IC/IR 对照。
+
 ---
 
 ## 四、数据目录约定（与你的 `.../monthly/klines`）
